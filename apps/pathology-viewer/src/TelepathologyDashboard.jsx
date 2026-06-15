@@ -1,0 +1,584 @@
+/**
+ * TelepathologyDashboard — the whole application UI and state.
+ * ---------------------------------------------------------------------------
+ * It is a single component that renders ONE of three "pages" based on the
+ * `page` state value (there is no router library — just conditional returns):
+ *   'queue'   → the FNAC patient worklist.
+ *   'slide'   → the WSI viewer (<WsiViewer/>) plus the annotation toolbar.
+ *   'details' → the per-patient prescription / clinical notes.
+ *
+ * It owns all app state: which patient is selected, annotation tool/color, the
+ * clinical text for each patient, and the saved annotated images. It talks to
+ * the slide viewer through `viewerApiRef` (save / discard / export).
+ */
+import React, { useState, useRef, useEffect } from 'react';
+// Icons used across the UI (tree-shaken from the lucide icon set).
+import {
+  Clock, Pencil, Square, Circle, Eraser, ArrowLeft, FileText, Download,
+  Microscope, ChevronRight, ClipboardList, Stethoscope, Pill, ShieldCheck,
+  Save, Eye, FileImage, Check, X,
+} from 'lucide-react';
+import WsiViewer from './WsiViewer';
+
+// The annotation colour palette shown in the slide toolbar (label + CSS hex).
+const COLORS = [
+  { label: 'Red',    value: '#ef4444' },
+  { label: 'Orange', value: '#f97316' },
+  { label: 'Yellow', value: '#eab308' },
+  { label: 'Green',  value: '#22c55e' },
+  { label: 'Blue',   value: '#3b82f6' },
+  { label: 'Purple', value: '#a855f7' },
+  { label: 'White',  value: '#ffffff' },
+  { label: 'Black',  value: '#000000' },
+];
+
+// The annotation tools. `id` is matched in WsiViewer's handleMouseDown to pick
+// the drawing behaviour; `icon`/`label` drive the toolbar button.
+const TOOLS = [
+  { id: 'freehand', icon: Pencil, label: 'Freehand' },
+  { id: 'rect',     icon: Square,  label: 'Rectangle' },
+  { id: 'oval',     icon: Circle,  label: 'Oval' },
+  { id: 'eraser',   icon: Eraser,  label: 'Eraser' },
+];
+
+// Kept outside the component so each case object keeps a stable identity
+// across re-renders — WsiViewer rebuilds its canvases when caseData changes,
+// which would wipe annotations on every unrelated state update.
+const cases = [
+  { id: 1, patient: 'Patient A', age: 45, gender: 'F', site: 'Lymph Node', status: 'Pending', date: '2026-05-23', image: 'IMG-20260525-WA0002.jpg' },
+  { id: 2, patient: 'Patient B', age: 62, gender: 'M', site: 'Lymph Node', status: 'Pending', date: '2026-05-23', image: 'IMG-20260525-WA0003.jpg' },
+  { id: 3, patient: 'Patient C', age: 29, gender: 'F', site: 'Lymph Node', status: 'Pending', date: '2026-05-22', image: 'IMG-20260525-WA0005.jpg' },
+];
+
+// Avatar background tints, chosen per patient by index so each row's circle
+// has a stable colour.
+const AVATAR_TINTS = [
+  'bg-blue-100 text-blue-700',
+  'bg-violet-100 text-violet-700',
+  'bg-teal-100 text-teal-700',
+];
+// "Patient A" -> "PA": first letter of each word, for the avatar circle.
+const initialsOf = (name) => name.split(' ').map(w => w[0]).join('').toUpperCase();
+
+// Lightweight localStorage persistence so saved notes and annotated images
+// survive a page reload on a given machine. (Sharing between two different
+// machines would require a backend server, which this prototype does not have.)
+const loadLS = (key) => {
+  try { return JSON.parse(localStorage.getItem(key)) || {}; }
+  catch { return {}; }
+};
+const saveLS = (key, value) => {
+  try { localStorage.setItem(key, JSON.stringify(value)); }
+  catch { /* quota exceeded (large images) — keep in memory for this session */ }
+};
+
+// A white card with an icon-badge header, used for each section on the details
+// page. `children` is the card body. (Destructuring `icon: Icon` lets us use it
+// as a JSX component, which must be capitalised.)
+const SectionCard = ({ icon: Icon, title, children }) => (
+  <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6">
+    <div className="flex items-center gap-2.5 mb-4">
+      <div className="w-7 h-7 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+        <Icon className="w-3.5 h-3.5 text-blue-600" />
+      </div>
+      <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">{title}</h3>
+    </div>
+    {children}
+  </section>
+);
+
+// The little status badge: amber "Pending" or green "Reported".
+const StatusPill = ({ status }) => (
+  status === 'Pending' ? (
+    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 ring-1 ring-amber-200">
+      <Clock className="w-3 h-3" /> Pending
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200">
+      <ShieldCheck className="w-3 h-3" /> Reported
+    </span>
+  )
+);
+
+const TelepathologyDashboard = () => {
+  // Three-page flow (all screen sizes):
+  // 'queue'   — FNAC patient list
+  // 'slide'   — the whole-slide image viewer with annotation tools
+  // 'details' — prescription / clinical information
+  const [page, setPage] = useState('queue');
+  const [activeCase, setActiveCase] = useState(1);
+  const [isDrawing, setIsDrawing] = useState(false);
+  // Both start null when annotation mode is enabled: the user must pick a
+  // color and a tool every session before they can draw.
+  const [annotationColor, setAnnotationColor] = useState(null);
+  const [annotationTool, setAnnotationTool] = useState(null);
+  const [showSaveModal, setShowSaveModal] = useState(false);
+
+  // Per-patient clinical text, keyed by case id. Drafts live here as the user
+  // types and are cleared on save; the "saved" copies persist (and are what
+  // other sections / machines read back).
+  const [clinicalDraft, setClinicalDraft] = useState({});
+  const [clinicalSaved, setClinicalSaved] = useState(() => loadLS('pv_clinicalSaved'));
+  const [pathologistDraft, setPathologistDraft] = useState({});
+  const [pathologistSaved, setPathologistSaved] = useState(() => loadLS('pv_pathologistSaved'));
+  const [medicineDraft, setMedicineDraft] = useState({});
+  const [medicineSaved, setMedicineSaved] = useState(() => loadLS('pv_medicineSaved'));
+  // Composited annotated image (slide + drawings) per patient, kept separate
+  // from the live slide so the original is never altered.
+  const [annotatedImages, setAnnotatedImages] = useState(() => loadLS('pv_annotatedImages'));
+  const [savedFlash, setSavedFlash] = useState(null);   // which Save button just fired
+  const [modal, setModal] = useState(null);             // viewer overlay {type,title,...}
+
+  // Persist saved values so a pathologist / physician keeps their work across
+  // reloads on their own machine.
+  useEffect(() => { saveLS('pv_clinicalSaved', clinicalSaved); }, [clinicalSaved]);
+  useEffect(() => { saveLS('pv_pathologistSaved', pathologistSaved); }, [pathologistSaved]);
+  useEffect(() => { saveLS('pv_medicineSaved', medicineSaved); }, [medicineSaved]);
+  useEffect(() => { saveLS('pv_annotatedImages', annotatedImages); }, [annotatedImages]);
+
+  const viewerApiRef = useRef(null);
+
+  const currentCase = cases.find(c => c.id === activeCase) || cases[0];
+  const id = activeCase;
+  const defaultClinical = `Palpable nodule identified in the ${currentCase.site.toLowerCase()}.`;
+
+  const openCase = (cid) => {
+    setActiveCase(cid);
+    setPage('slide');
+  };
+
+  const enableAnnotation = () => {
+    setAnnotationColor(null);
+    setAnnotationTool(null);
+    setIsDrawing(true);
+  };
+
+  const saveAndClose = () => {
+    // save() returns the composited annotated PNG; we keep it as a separate
+    // artifact and the live slide returns to the clean original.
+    const png = viewerApiRef.current?.save();
+    if (png) setAnnotatedImages(prev => ({ ...prev, [id]: png }));
+    setShowSaveModal(false);
+    setIsDrawing(false);
+  };
+
+  const discardAndClose = async () => {
+    await viewerApiRef.current?.discard();
+    setShowSaveModal(false);
+    setIsDrawing(false);
+  };
+
+  const exportAnnotations = () => {
+    const dataURL = annotatedImages[id] || viewerApiRef.current?.exportPNG();
+    if (dataURL) {
+      const link = document.createElement('a');
+      link.download = `annotation-${currentCase.patient}.png`;
+      link.href = dataURL;
+      link.click();
+    } else {
+      alert("No annotated image yet — annotate the slide and save changes first.");
+    }
+  };
+
+  // Brief "Saved ✓" feedback on the text Save buttons
+  const flashSaved = (key) => {
+    setSavedFlash(key);
+    setTimeout(() => setSavedFlash(f => (f === key ? null : f)), 1800);
+  };
+  // Each Save commits the draft to the persisted "saved" copy, then clears the
+  // textarea (the text disappears once saved).
+  const saveClinical = () => {
+    setClinicalSaved(prev => ({ ...prev, [id]: clinicalDraft[id] ?? defaultClinical }));
+    setClinicalDraft(prev => ({ ...prev, [id]: '' }));
+    flashSaved('clinical');
+  };
+  const savePathologist = () => {
+    setPathologistSaved(prev => ({ ...prev, [id]: pathologistDraft[id] ?? '' }));
+    setPathologistDraft(prev => ({ ...prev, [id]: '' }));
+    flashSaved('pathologist');
+  };
+  const saveMedicine = () => {
+    setMedicineSaved(prev => ({ ...prev, [id]: medicineDraft[id] ?? '' }));
+    setMedicineDraft(prev => ({ ...prev, [id]: '' }));
+    flashSaved('medicine');
+  };
+
+  // Modal openers
+  const viewAnnotatedImage = () => {
+    const src = annotatedImages[id];
+    if (src) setModal({ type: 'image', title: `Annotated slide — ${currentCase.patient}`, src });
+    else setModal({ type: 'message', title: 'No annotated image', text: 'No annotated image has been saved for this patient yet. Open the slide, annotate it, and choose “Save Changes”.' });
+  };
+  const viewPathologistNotes = () => {
+    const text = pathologistSaved[id];
+    setModal({
+      type: 'text',
+      title: `Pathologist consultation — ${currentCase.patient}`,
+      text: text && text.trim() ? text : 'No pathologist consultation has been saved for this patient yet.',
+    });
+  };
+
+  /* ============ PAGE 1 — FNAC QUEUE ============ */
+  if (page === 'queue') {
+    return (
+      <div className="h-screen bg-slate-100 text-slate-900 overflow-hidden flex flex-col">
+        {/* App header */}
+        <header className="bg-white border-b border-slate-200/80 px-4 sm:px-8 py-4 shadow-sm">
+          <div className="max-w-2xl mx-auto w-full flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm shrink-0">
+              <Microscope className="w-5 h-5 text-white" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-lg font-bold tracking-tight text-slate-900 leading-tight">Telepathology Console</h1>
+              <p className="text-xs text-slate-500 font-medium">FNAC review queue</p>
+            </div>
+            <span className="ml-auto text-xs font-semibold text-slate-500 bg-slate-100 rounded-full px-3 py-1 ring-1 ring-slate-200 shrink-0">
+              {cases.length} cases
+            </span>
+          </div>
+        </header>
+
+        <div className="flex-1 overflow-y-auto px-0 sm:px-8">
+          <div className="max-w-2xl mx-auto w-full">
+            <p className="hidden sm:block text-xs font-semibold text-slate-400 uppercase tracking-widest mt-6 mb-2 px-1">
+              Worklist — select a patient to open the slide
+            </p>
+            {/* One clickable row per patient; tapping it opens that patient's slide. */}
+            <div className="bg-white sm:rounded-2xl sm:shadow-sm ring-1 ring-slate-200/70 overflow-hidden sm:mb-8">
+              {cases.map((c, i) => (
+                <div
+                  key={c.id}
+                  onClick={() => openCase(c.id)}
+                  className="group flex items-center gap-3 sm:gap-4 px-4 sm:px-5 py-4 border-b border-slate-100 last:border-b-0 cursor-pointer transition-colors hover:bg-blue-50/60"
+                >
+                  <div className={`w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${AVATAR_TINTS[i % AVATAR_TINTS.length]}`}>
+                    {initialsOf(c.patient)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-slate-800 group-hover:text-blue-700 transition-colors">{c.patient}</span>
+                      <StatusPill status={c.status} />
+                    </div>
+                    <p className="text-xs text-slate-500 font-medium mt-0.5 truncate">
+                      {c.site} &nbsp;·&nbsp; {c.age} yrs / {c.gender} &nbsp;·&nbsp; {c.date}
+                    </p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-500 group-hover:translate-x-0.5 transition-all shrink-0" />
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ============ PAGE 3 — PRESCRIPTION / DETAILS ============ */
+  if (page === 'details') {
+    // Shared Tailwind class strings, kept in variables so the markup below
+    // stays readable and the buttons/textareas look identical.
+    const taClass = "w-full h-28 p-3.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50 placeholder:text-slate-400";
+    const btnSecondary = "inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 ring-1 ring-slate-200 hover:bg-slate-200 active:scale-95 transition-all";
+    const btnPrimary = "inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm active:scale-95 transition-all";
+
+    return (
+      <div className="h-screen bg-slate-100 text-slate-900 overflow-y-auto">
+        <div className="sticky top-0 bg-white/95 backdrop-blur border-b border-slate-200/80 px-4 sm:px-8 py-3.5 shadow-sm flex items-center gap-3 z-10">
+          <button
+            onClick={() => setPage('slide')}
+            title="Back to slide"
+            className="p-2.5 rounded-xl text-slate-600 bg-slate-100 hover:bg-slate-200 ring-1 ring-slate-200 transition-all shrink-0"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-sm font-bold shrink-0">
+            {initialsOf(currentCase.patient)}
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-base sm:text-lg font-bold text-slate-900 truncate leading-tight">{currentCase.patient}</h2>
+            <p className="text-xs text-slate-500 font-medium">{currentCase.age} years · {currentCase.gender} · {currentCase.site}</p>
+          </div>
+          <div className="ml-auto shrink-0"><StatusPill status={currentCase.status} /></div>
+        </div>
+
+        <div className="max-w-3xl mx-auto w-full px-4 sm:px-8 py-6 space-y-5 pb-12">
+          {/* 1. NIKSAY Patient Information — read-only facts shown as a 2-col grid */}
+          <SectionCard icon={ClipboardList} title="1. NIKSAY Patient Information">
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-slate-100 rounded-xl overflow-hidden ring-1 ring-slate-200/70">
+              {[
+                ['Registration ID', `NK-2026-${currentCase.id}001`],
+                ['Status', currentCase.status],
+                ['Specimen Site', currentCase.site],
+                ['Collected', currentCase.date],
+              ].map(([k, v]) => (
+                <div key={k} className="bg-slate-50/80 px-4 py-3">
+                  <dt className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{k}</dt>
+                  <dd className={`text-sm font-semibold mt-0.5 ${k === 'Status' ? 'text-emerald-600' : 'text-slate-800'}`}>{v}</dd>
+                </div>
+              ))}
+            </dl>
+          </SectionCard>
+
+          {/* 2. Clinical Notes — editable, with its own Save button */}
+          <SectionCard icon={FileText} title="2. Clinical Notes">
+            <textarea
+              className={taClass}
+              placeholder="Enter clinical notes…"
+              value={clinicalDraft[id] ?? defaultClinical}
+              onChange={(e) => setClinicalDraft(prev => ({ ...prev, [id]: e.target.value }))}
+            />
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button onClick={saveClinical} className={btnPrimary}>
+                {savedFlash === 'clinical'
+                  ? <><Check className="w-3.5 h-3.5" /> Saved</>
+                  : <><Save className="w-3.5 h-3.5" /> Save Notes</>}
+              </button>
+            </div>
+          </SectionCard>
+
+          {/* 3. Pathologist Consultation — view annotated image + save notes */}
+          <SectionCard icon={Stethoscope} title="3. Pathologist Consultation">
+            <textarea
+              className={taClass}
+              placeholder="Enter microscopic findings…"
+              value={pathologistDraft[id] ?? ''}
+              onChange={(e) => setPathologistDraft(prev => ({ ...prev, [id]: e.target.value }))}
+            />
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button onClick={viewAnnotatedImage} className={btnSecondary}>
+                <FileImage className="w-3.5 h-3.5" /> View Annotated Image
+              </button>
+              <button onClick={savePathologist} className={btnPrimary}>
+                {savedFlash === 'pathologist'
+                  ? <><Check className="w-3.5 h-3.5" /> Saved</>
+                  : <><Save className="w-3.5 h-3.5" /> Save Notes</>}
+              </button>
+            </div>
+          </SectionCard>
+
+          {/* 4. Medicine Consultation — view image + view pathologist notes + save */}
+          <SectionCard icon={Pill} title="4. Medicine Consultation">
+            <textarea
+              className={taClass}
+              placeholder="Physician recommendations…"
+              value={medicineDraft[id] ?? ''}
+              onChange={(e) => setMedicineDraft(prev => ({ ...prev, [id]: e.target.value }))}
+            />
+            <div className="flex flex-wrap gap-2 mt-4">
+              <button onClick={viewAnnotatedImage} className={btnSecondary}>
+                <FileImage className="w-3.5 h-3.5" /> View Annotated Image
+              </button>
+              <button onClick={viewPathologistNotes} className={btnSecondary}>
+                <Eye className="w-3.5 h-3.5" /> View Pathologist Notes
+              </button>
+              <button onClick={saveMedicine} className={btnPrimary}>
+                {savedFlash === 'medicine'
+                  ? <><Check className="w-3.5 h-3.5" /> Saved</>
+                  : <><Save className="w-3.5 h-3.5" /> Save Notes</>}
+              </button>
+            </div>
+            <button className="w-full mt-5 py-3 bg-blue-600 text-white rounded-xl font-semibold text-sm tracking-wide hover:bg-blue-700 active:scale-[0.99] shadow-md shadow-blue-600/20 transition-all">
+              Sign &amp; Submit Report
+            </button>
+          </SectionCard>
+        </div>
+
+        {/* Shared viewer modal — annotated image, saved notes, or a message */}
+        {modal && (
+          <div
+            onClick={() => setModal(null)}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col ring-1 ring-slate-200 overflow-hidden"
+            >
+              <div className="flex items-center gap-3 px-5 py-3.5 border-b border-slate-100">
+                <h3 className="text-sm font-bold text-slate-900 truncate">{modal.title}</h3>
+                <button onClick={() => setModal(null)} className="ml-auto p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 transition-all shrink-0">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-5 overflow-y-auto">
+                {modal.type === 'image' && (
+                  <>
+                    <img src={modal.src} alt="Annotated slide" className="w-full rounded-xl ring-1 ring-slate-200" />
+                    <a
+                      href={modal.src}
+                      download={`annotation-${currentCase.patient}.png`}
+                      className="mt-4 w-full inline-flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 transition-all"
+                    >
+                      <Download className="w-4 h-4" /> Download Image
+                    </a>
+                  </>
+                )}
+                {modal.type === 'text' && (
+                  <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{modal.text}</p>
+                )}
+                {modal.type === 'message' && (
+                  <p className="text-sm text-slate-500 leading-relaxed">{modal.text}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* ============ PAGE 2 — SLIDE VIEWER ============ */
+  // (This is the default return — reached when page is neither 'queue' nor 'details'.)
+  return (
+    <div className="h-screen bg-slate-950 text-slate-900 overflow-hidden flex flex-col relative">
+      {/* Top header bar */}
+      <div className="flex items-center justify-between gap-2 px-3 sm:px-5 bg-slate-950 border-b border-slate-800/80" style={{ minHeight: '4rem' }}>
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Back to queue — disabled while annotating so you can't leave with
+              unsaved drawings (the save dialog is the only exit then). */}
+          <button
+            onClick={() => setPage('queue')}
+            title="Back to queue"
+            disabled={isDrawing}
+            className="p-2.5 rounded-xl text-slate-300 bg-slate-800/80 hover:bg-slate-700 ring-1 ring-slate-700/50 transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-white truncate leading-tight">{currentCase.patient}</p>
+            <p className="text-[11px] text-slate-400 font-medium truncate">{currentCase.site} · WSI viewer</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={exportAnnotations}
+            title="Export annotated image"
+            className="p-2.5 rounded-xl text-slate-300 bg-slate-800/80 hover:bg-slate-700 ring-1 ring-slate-700/50 transition-all"
+          >
+            <Download className="w-4 h-4" />
+          </button>
+          {/* The Annotate toggle: when off it enters annotation mode; when on it
+              opens the save/discard dialog (which then exits). */}
+          <button
+            onClick={() => (isDrawing ? setShowSaveModal(true) : enableAnnotation())}
+            className={`px-3.5 sm:px-5 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wide transition-all ring-1 ${
+              isDrawing
+                ? 'bg-red-600 text-white ring-red-500 hover:bg-red-700 shadow-md shadow-red-900/40'
+                : 'bg-blue-600 text-white ring-blue-500 hover:bg-blue-500 shadow-md shadow-blue-900/40'
+            }`}
+          >
+            <span className="hidden sm:inline">{isDrawing ? 'Disable Annotation' : 'Enable Annotation'}</span>
+            <span className="sm:hidden">{isDrawing ? 'Disable' : 'Annotate'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Annotation toolbar — color and tool must both be picked each session */}
+      {isDrawing && (
+        <div className="flex items-center gap-3 px-3 sm:px-5 py-2.5 bg-slate-900 border-b border-slate-800/80 overflow-x-auto">
+          {/* Color swatches — not applicable to the eraser, so they grey out
+              and stop responding while it is selected */}
+          <div className={`flex items-center gap-1.5 shrink-0 transition-opacity ${annotationTool === 'eraser' ? 'opacity-30 pointer-events-none' : ''}`}>
+            <span className="text-[11px] text-slate-400 mr-1 uppercase tracking-widest font-semibold hidden md:inline">Color</span>
+            {COLORS.map((c) => (
+              <button
+                key={c.value}
+                title={c.label}
+                disabled={annotationTool === 'eraser'}
+                onClick={() => setAnnotationColor(c.value)}
+                style={{ backgroundColor: c.value }}
+                className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full ring-2 ring-offset-2 ring-offset-slate-900 transition-transform hover:scale-110 ${
+                  annotationColor === c.value && annotationTool !== 'eraser' ? 'ring-white scale-110' : 'ring-transparent'
+                }`}
+              />
+            ))}
+          </div>
+
+          {/* Divider */}
+          <div className="w-px h-6 bg-slate-700 shrink-0" />
+
+          {/* Shape tools */}
+          <div className="flex items-center gap-1 shrink-0 bg-slate-800/80 rounded-xl p-1 ring-1 ring-slate-700/50">
+            {TOOLS.map((t) => {
+              const Icon = t.icon;
+              return (
+                <button
+                  key={t.id}
+                  title={t.label}
+                  onClick={() => setAnnotationTool(t.id)}
+                  className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    annotationTool === t.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-700/70'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  <span className="hidden lg:inline">{t.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Hint until the required choices are made (eraser needs no color) */}
+          {(!annotationTool || (annotationTool !== 'eraser' && !annotationColor)) && (
+            <span className="flex items-center gap-1.5 text-[11px] text-amber-300 font-semibold shrink-0 ml-auto bg-amber-400/10 px-3 py-1.5 rounded-full ring-1 ring-amber-400/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              {!annotationTool
+                ? `Select a ${!annotationColor ? 'color and ' : ''}tool to start`
+                : 'Select a color to start'}
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="flex-1 relative">
+        <WsiViewer
+          ref={viewerApiRef}
+          caseData={currentCase}
+          annotationMode={isDrawing}
+          annotationColor={annotationColor}
+          annotationTool={annotationTool}
+        />
+      </div>
+
+      {/* Floating button to the prescription page — hidden while annotating */}
+      {!isDrawing && (
+        <button
+          onClick={() => setPage('details')}
+          className="absolute bottom-5 right-5 z-[70] flex items-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-full font-semibold text-sm shadow-lg shadow-blue-950/50 ring-1 ring-blue-500 hover:bg-blue-500 hover:shadow-xl active:scale-95 transition-all"
+        >
+          <FileText className="w-4 h-4" />
+          <span className="hidden sm:inline">Prescription &amp; Info</span>
+        </button>
+      )}
+
+      {/* Save-changes dialog shown when leaving annotation mode */}
+      {showSaveModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center ring-1 ring-slate-200">
+            <div className="mx-auto w-12 h-12 rounded-full bg-blue-50 ring-8 ring-blue-50/50 flex items-center justify-center mb-4">
+              <Pencil className="w-5 h-5 text-blue-600" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900 tracking-tight">Save annotations?</h3>
+            <p className="text-sm text-slate-500 mt-2 mb-6 leading-relaxed">
+              Do you want to keep the annotations you made on {currentCase.patient}'s slide?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={discardAndClose}
+                className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-slate-600 bg-slate-100 ring-1 ring-slate-200 hover:bg-slate-200 transition-all"
+              >
+                Don't Save
+              </button>
+              <button
+                onClick={saveAndClose}
+                className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-white bg-blue-600 hover:bg-blue-700 shadow-md shadow-blue-600/25 transition-all"
+              >
+                Save Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default TelepathologyDashboard;

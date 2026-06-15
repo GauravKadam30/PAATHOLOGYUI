@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+/* ===== Global typography & rendering ===== */
+html {
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: #bfdbfe; /* blue-200 */
+  color: #1e3a8a;      /* blue-900 */
+}
+
+/* ===== Slim, unobtrusive scrollbars ===== */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #cbd5e1; /* slate-300 */
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ===== Consistent focus & form styling ===== */
+textarea,
+input {
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+textarea:focus,
+input:focus {
+  border-color: #3b82f6;                      /* blue-500 */
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 0.15);
+}
+textarea {
+  resize: vertical;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ===== OpenSeadragon ===== */
+.openseadragon-container {
+  position: relative !important;
+}
+
+#openseadragon-viewer {
+  touch-action: none;
+}
+
+/* Default state for when not in annotation mode */
+.upper-canvas {
+  z-index: 999 !important;
+}

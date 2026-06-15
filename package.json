@@ -1,0 +1,7 @@
+{
+  "name": "my-clinical-system",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ]
+}
