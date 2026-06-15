@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Generated per-OS — committing it caused native-binary mismatches across
+# Windows/Linux. Each machine creates its own on `npm install`.
+package-lock.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
