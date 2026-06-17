@@ -51,18 +51,57 @@ state value in `TelepathologyDashboard.jsx`):
   fields, saved **per patient**.
 - The Pathologist section can view the saved annotated image; the Medicine
   section can view both the annotated image and the saved pathologist notes.
-- Saved notes and annotated images are persisted to the browser's
-  `localStorage`, so they survive a page reload **on the same machine**.
-  (Sharing data between two different machines would require a backend server,
-  which this front-end-only prototype does not include.)
+- Saved notes and annotated images are stored on a small **shared backend**
+  (see below), so they sync **across machines**. The browser `localStorage`
+  is kept as an instant cache / offline fallback.
+
+## Shared backend (cross-machine sync)
+
+`apps/server` is a tiny Node API (Express + a JSON file, no native modules) that
+stores the saved notes and annotated images centrally so a pathologist on one
+machine and a physician on another see the same data.
+
+**Run it locally (single machine):**
+
+```bash
+# terminal 1 — start the API
+cd apps/server
+npm start                       # http://localhost:3001
+
+# terminal 2 — start the app (it talks to the API by default)
+cd apps/pathology-viewer
+npm run dev
+```
+
+The app reads/writes through the API on load and on every Save; if the API
+isn't running, it falls back to the local browser cache and keeps working.
+
+**Make it truly cross-machine:** the backend must be reachable from every
+machine. Pick one:
+
+1. **Deploy** `apps/server` to a free host (Render, Railway, Fly, …). It honors
+   the `PORT` env var and allows any origin (CORS).
+2. **Tunnel** a locally-running server: `cloudflared tunnel --url http://localhost:3001`
+   (or `ngrok http 3001`).
+3. **Same network:** use the host machine's LAN IP, e.g. `http://192.168.1.20:3001`.
+
+Then, on each machine, point the app at that URL by creating
+`apps/pathology-viewer/.env` (copy `.env.example`):
+
+```
+VITE_API_URL=https://your-backend-host.example.com
+```
+
+Restart the dev server after changing `.env`.
 
 ## Tech stack
 
-- **React 18** + **Vite 5**
+- **React 18** + **Vite 7**
 - **OpenSeadragon 6** — deep-zoom slide rendering
 - **Fabric.js 7** — the annotation canvas
 - **Tailwind CSS 4** — styling
 - **lucide-react** — icons
+- **Express** — the shared backend (`apps/server`)
 
 ### Source layout (`apps/pathology-viewer/src`)
 
@@ -72,6 +111,7 @@ state value in `TelepathologyDashboard.jsx`):
 | `App.jsx` | Thin root wrapper around the dashboard. |
 | `TelepathologyDashboard.jsx` | All app state and the three screens. |
 | `WsiViewer.jsx` | The slide viewer, annotation engine, and export/save API. |
+| `api.js` | Thin client for the shared backend (`apps/server`). |
 | `index.css` | Tailwind import + global styles. |
 
 The slide images live in `apps/pathology-viewer/public` and are served from the

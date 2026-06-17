@@ -19,6 +19,7 @@ import {
   Save, Eye, FileImage, Check, X,
 } from 'lucide-react';
 import WsiViewer from './WsiViewer';
+import { apiGet, apiPut } from './api';
 
 // The annotation colour palette shown in the slide toolbar (label + CSS hex).
 const COLORS = [
@@ -60,9 +61,9 @@ const AVATAR_TINTS = [
 // "Patient A" -> "PA": first letter of each word, for the avatar circle.
 const initialsOf = (name) => name.split(' ').map(w => w[0]).join('').toUpperCase();
 
-// Lightweight localStorage persistence so saved notes and annotated images
-// survive a page reload on a given machine. (Sharing between two different
-// machines would require a backend server, which this prototype does not have.)
+// Local browser cache. The shared backend (see ./api) is the source of truth
+// across machines; this cache makes the UI instant and keeps things working
+// when the backend is offline.
 const loadLS = (key) => {
   try { return JSON.parse(localStorage.getItem(key)) || {}; }
   catch { return {}; }
@@ -129,12 +130,36 @@ const TelepathologyDashboard = () => {
   const [savedFlash, setSavedFlash] = useState(null);   // which Save button just fired
   const [modal, setModal] = useState(null);             // viewer overlay {type,title,...}
 
-  // Persist saved values so a pathologist / physician keeps their work across
-  // reloads on their own machine.
+  // Mirror saved values into the local cache whenever they change.
   useEffect(() => { saveLS('pv_clinicalSaved', clinicalSaved); }, [clinicalSaved]);
   useEffect(() => { saveLS('pv_pathologistSaved', pathologistSaved); }, [pathologistSaved]);
   useEffect(() => { saveLS('pv_medicineSaved', medicineSaved); }, [medicineSaved]);
   useEffect(() => { saveLS('pv_annotatedImages', annotatedImages); }, [annotatedImages]);
+
+  // On load, pull the latest data from the shared backend so notes / annotated
+  // images saved on ANOTHER machine appear here too. If the backend is offline
+  // we silently keep the local cache the state was seeded with.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [c, p, m, a] = await Promise.all([
+          apiGet('pv_clinicalSaved'),
+          apiGet('pv_pathologistSaved'),
+          apiGet('pv_medicineSaved'),
+          apiGet('pv_annotatedImages'),
+        ]);
+        if (cancelled) return;
+        setClinicalSaved(c);
+        setPathologistSaved(p);
+        setMedicineSaved(m);
+        setAnnotatedImages(a);
+      } catch {
+        /* backend not reachable — keep using the local cache */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const viewerApiRef = useRef(null);
 
@@ -155,9 +180,14 @@ const TelepathologyDashboard = () => {
 
   const saveAndClose = () => {
     // save() returns the composited annotated PNG; we keep it as a separate
-    // artifact and the live slide returns to the clean original.
+    // artifact and the live slide returns to the clean original. The new map is
+    // pushed to the shared backend so other machines can load it.
     const png = viewerApiRef.current?.save();
-    if (png) setAnnotatedImages(prev => ({ ...prev, [id]: png }));
+    if (png) {
+      const next = { ...annotatedImages, [id]: png };
+      setAnnotatedImages(next);
+      apiPut('pv_annotatedImages', next);
+    }
     setShowSaveModal(false);
     setIsDrawing(false);
   };
@@ -185,20 +215,26 @@ const TelepathologyDashboard = () => {
     setSavedFlash(key);
     setTimeout(() => setSavedFlash(f => (f === key ? null : f)), 1800);
   };
-  // Each Save commits the draft to the persisted "saved" copy, then clears the
-  // textarea (the text disappears once saved).
+  // Each Save commits the draft to the persisted "saved" copy, pushes it to the
+  // shared backend (so other machines see it), then clears the textarea.
   const saveClinical = () => {
-    setClinicalSaved(prev => ({ ...prev, [id]: clinicalDraft[id] ?? defaultClinical }));
+    const next = { ...clinicalSaved, [id]: clinicalDraft[id] ?? defaultClinical };
+    setClinicalSaved(next);
+    apiPut('pv_clinicalSaved', next);
     setClinicalDraft(prev => ({ ...prev, [id]: '' }));
     flashSaved('clinical');
   };
   const savePathologist = () => {
-    setPathologistSaved(prev => ({ ...prev, [id]: pathologistDraft[id] ?? '' }));
+    const next = { ...pathologistSaved, [id]: pathologistDraft[id] ?? '' };
+    setPathologistSaved(next);
+    apiPut('pv_pathologistSaved', next);
     setPathologistDraft(prev => ({ ...prev, [id]: '' }));
     flashSaved('pathologist');
   };
   const saveMedicine = () => {
-    setMedicineSaved(prev => ({ ...prev, [id]: medicineDraft[id] ?? '' }));
+    const next = { ...medicineSaved, [id]: medicineDraft[id] ?? '' };
+    setMedicineSaved(next);
+    apiPut('pv_medicineSaved', next);
     setMedicineDraft(prev => ({ ...prev, [id]: '' }));
     flashSaved('medicine');
   };

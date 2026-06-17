@@ -16,6 +16,10 @@ dist-ssr
 # Windows/Linux. Each machine creates its own on `npm install`.
 package-lock.json
 
+# Backend data store (created at runtime) and local env files
+data.json
+.env
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
