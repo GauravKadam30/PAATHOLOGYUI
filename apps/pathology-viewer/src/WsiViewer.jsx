@@ -219,34 +219,52 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
     return () => clearTimeout(t);
   }, [isFullPage, syncViewport]);
 
-  // Composites the slide image and the annotation layer into one PNG.
-  // The slide lives on OpenSeadragon's canvas and the drawings on fabric's
-  // lower canvas — exporting either alone gives a blank/annotation-only file.
-  // This produces a SEPARATE image; the live slide is never altered.
-  const compositePNG = useCallback(() => {
-    const viewer = viewerRef.current;
+  // Builds a BRAND-NEW, full-resolution image: the ORIGINAL slide at its native
+  // pixel size with the annotations drawn on top — NOT a screenshot of whatever
+  // is on screen at the current zoom. Annotations live in image coordinates, so
+  // they map 1:1 onto the full image. Async because it loads the original at
+  // native resolution and clones the marks onto an off-screen canvas.
+  const compositeAnnotatedImage = useCallback(async () => {
     const canvas = fabricRef.current;
-    const osdCanvas = viewer?.drawer?.canvas;   // OSD's actual <canvas> element
-    if (!osdCanvas || !osdCanvas.width) return null;
-    const out = document.createElement('canvas'); // off-screen scratch canvas
-    out.width = osdCanvas.width;
-    out.height = osdCanvas.height;
-    const ctx = out.getContext('2d');
-    ctx.drawImage(osdCanvas, 0, 0, out.width, out.height);   // 1) the slide
-    const annot = canvas?.lowerCanvasEl;                      // fabric's pixel layer
-    if (annot && annot.width) {
-      // sizes can differ by device-pixel-ratio; scale to match.
-      ctx.drawImage(annot, 0, 0, annot.width, annot.height, 0, 0, out.width, out.height); // 2) the drawings
+    if (!canvas || !caseData?.image) return null;
+
+    // Load the original slide at native resolution. It's served from /public
+    // (same-origin), so the export canvas won't be tainted and toDataURL works.
+    const img = await new Promise((resolve) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => resolve(null);
+      im.src = `/${caseData.image}`;
+    });
+    if (!img) return null;
+    const W = img.naturalWidth, H = img.naturalHeight;
+
+    // Render the marks at native scale: a fresh StaticCanvas has the default
+    // identity transform, so each mark sits at its image-pixel position.
+    const layer = new fabric.StaticCanvas(null, { width: W, height: H, enableRetinaScaling: false });
+    for (const o of canvas.getObjects()) {
+      layer.add(await o.clone());
     }
-    return out.toDataURL('image/png');   // a "data:image/png;base64,..." string
-  }, []);
+    layer.renderAll();
+
+    // Composite onto a new canvas: original slide first, annotations on top.
+    const out = document.createElement('canvas');
+    out.width = W;
+    out.height = H;
+    const ctx = out.getContext('2d');
+    ctx.drawImage(img, 0, 0, W, H);
+    ctx.drawImage(layer.lowerCanvasEl, 0, 0, W, H);
+    layer.dispose();
+
+    return out.toDataURL('image/png');
+  }, [caseData]);
 
   // Expose a small API to the parent via its ref.
   useImperativeHandle(ref, () => ({
-    // Returns the composited annotated image (slide + drawings) so the parent
-    // can keep it as a separate artifact. The live slide is never altered, and
-    // the canvas is wiped at the start of the next session for a fresh original.
-    save: () => compositePNG(),
+    // Returns the new full-resolution annotated image (a fresh artifact). The
+    // live slide is never altered, and the canvas is wiped at the start of the
+    // next session for a clean original.
+    save: () => compositeAnnotatedImage(),
     // "Don't save": reload the blank baseline snapshot, discarding this session.
     discard: async () => {
       const canvas = fabricRef.current;
@@ -256,8 +274,8 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
         canvas.renderAll();
       }
     },
-    exportPNG: compositePNG,   // same composite, used for the Download button
-  }), [caseData, syncViewport, compositePNG]);
+    exportPNG: compositeAnnotatedImage,   // same full-res image, for the Download button
+  }), [caseData, syncViewport, compositeAnnotatedImage]);
 
   // Convert a screen (mouse) position into IMAGE pixel coordinates by running it
   // through the INVERSE of the current viewport transform.

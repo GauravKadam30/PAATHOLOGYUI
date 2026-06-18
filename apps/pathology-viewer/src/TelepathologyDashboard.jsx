@@ -178,11 +178,11 @@ const TelepathologyDashboard = () => {
     setIsDrawing(true);
   };
 
-  const saveAndClose = () => {
-    // save() returns the composited annotated PNG; we keep it as a separate
-    // artifact and the live slide returns to the clean original. The new map is
-    // pushed to the shared backend so other machines can load it.
-    const png = viewerApiRef.current?.save();
+  const saveAndClose = async () => {
+    // save() builds a brand-new full-resolution annotated image; we keep it as
+    // a separate artifact and push it to the shared backend. The live slide is
+    // never altered.
+    const png = await viewerApiRef.current?.save();
     if (png) {
       const next = { ...annotatedImages, [id]: png };
       setAnnotatedImages(next);
@@ -198,8 +198,8 @@ const TelepathologyDashboard = () => {
     setIsDrawing(false);
   };
 
-  const exportAnnotations = () => {
-    const dataURL = annotatedImages[id] || viewerApiRef.current?.exportPNG();
+  const exportAnnotations = async () => {
+    const dataURL = annotatedImages[id] || await viewerApiRef.current?.exportPNG();
     if (dataURL) {
       const link = document.createElement('a');
       link.download = `annotation-${currentCase.patient}.png`;
