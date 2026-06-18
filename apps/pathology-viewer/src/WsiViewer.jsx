@@ -275,12 +275,44 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
     return !!s && pt.x >= 0 && pt.y >= 0 && pt.x <= s.x && pt.y <= s.y;
   };
 
-  // Mouse-down on the drawing overlay: begins a shape/stroke for the active tool.
-  const handleMouseDown = (e) => {
+  // Pointer-down on the drawing overlay: begins a shape/stroke (or erases) for
+  // the active tool. Pointer Events cover mouse, touch (phone) and pen alike.
+  const handlePointerDown = (e) => {
     const canvas = fabricRef.current;
     if (!canvas || !canDraw) return;
+    e.preventDefault();
+
+    // One-stroke eraser: tap or drag over a mark to delete that whole mark.
+    // The pointer and each mark's bounding box are both compared in IMAGE
+    // (scene) coordinates, so it works at any zoom; the topmost mark wins.
+    if (annotationTool === 'eraser') {
+      const eraseAt = (ev) => {
+        const pt = toImagePoint(ev.clientX, ev.clientY);
+        const objs = canvas.getObjects();
+        for (let i = objs.length - 1; i >= 0; i--) {
+          const o = objs[i];
+          o.setCoords();
+          const r = o.getBoundingRect();
+          const pad = (o.strokeWidth || 2);
+          if (pt.x >= r.left - pad && pt.x <= r.left + r.width + pad &&
+              pt.y >= r.top - pad && pt.y <= r.top + r.height + pad) {
+            canvas.remove(o);
+            canvas.renderAll();
+            return;
+          }
+        }
+      };
+      eraseAt(e.nativeEvent || e);
+      const onMove = (ev) => eraseAt(ev);
+      const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      return;
+    }
+
+    // Drawing tools only act on the slide image itself.
     const start = toImagePoint(e.clientX, e.clientY);
-    if (!isInImage(start)) return; // annotation only on the slide image itself
+    if (!isInImage(start)) return;
     const color = annotationColor;
     // Stroke widths are in image px so they scale with zoom along with the
     // shape; divide by current scale so they appear ~3px (18px eraser) now.
@@ -328,9 +360,9 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
       };
       // Stop tracking on mouse-up. Listeners live on `window` so a fast drag
       // that leaves the element still ends correctly.
-      const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
+      const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
 
     } else if (annotationTool === 'oval') {
       // Same corner-anchored behaviour as the rectangle: the press point is
@@ -355,40 +387,9 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
         oval.setCoords();
         canvas.renderAll();
       };
-      const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-
-    } else if (annotationTool === 'eraser') {
-      // Element eraser: punches a hole only where the cursor passes,
-      // using destination-out compositing — annotations under the
-      // stroke disappear, the rest stay intact. The slide image lives
-      // on the OpenSeadragon canvas below, so it is never affected.
-      let pathStr = `M ${start.x} ${start.y} L ${start.x} ${start.y}`; // SVG path data
-      let pathObj = null;
-
-      // Rebuild the eraser path each move (simplest reliable update in fabric).
-      const drawErase = () => {
-        if (pathObj) canvas.remove(pathObj);
-        pathObj = new fabric.Path(pathStr, {
-          stroke: '#000', strokeWidth: 18 / scale, fill: '',
-          strokeLineCap: 'round', strokeLineJoin: 'round',
-          selectable: false, evented: false,
-          globalCompositeOperation: 'destination-out', // = "erase what's underneath"
-        });
-        canvas.add(pathObj);
-        canvas.renderAll();
-      };
-      drawErase();
-
-      const onMove = (ev) => {
-        const p = clampMove(ev);
-        pathStr += ` L ${p.x} ${p.y}`;   // extend the trail
-        drawErase();
-      };
-      const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
+      const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
 
     } else {
       // freehand: a path that grows point-by-point as you drag.
@@ -406,9 +407,9 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
         canvas.add(pathObj);
         canvas.renderAll();
       };
-      const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
+      const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
     }
   };
 
@@ -438,14 +439,16 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
           className="absolute inset-0"
           style={{
             zIndex: 60,
+            // touch-action:none lets a finger drag draw instead of scrolling/zooming.
+            touchAction: 'none',
             // Drawing cursor only while over the slide image; outside it the
             // pointer reverts to normal and clicks are ignored.
             cursor: hoverInImage
               ? (annotationTool === 'eraser' ? ERASER_CURSOR : 'crosshair')
               : 'default',
           }}
-          onMouseMove={(e) => setHoverInImage(isInImage(toImagePoint(e.clientX, e.clientY)))}
-          onMouseDown={handleMouseDown}
+          onPointerMove={(e) => setHoverInImage(isInImage(toImagePoint(e.clientX, e.clientY)))}
+          onPointerDown={handlePointerDown}
         />
       )}
 

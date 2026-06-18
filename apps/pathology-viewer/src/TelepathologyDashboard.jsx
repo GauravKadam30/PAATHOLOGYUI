@@ -173,7 +173,7 @@ const TelepathologyDashboard = () => {
   };
 
   const enableAnnotation = () => {
-    setAnnotationColor(null);
+    setAnnotationColor('#000000'); // default to black; user only needs to pick a tool
     setAnnotationTool(null);
     setIsDrawing(true);
   };
@@ -257,7 +257,7 @@ const TelepathologyDashboard = () => {
   /* ============ PAGE 1 — FNAC QUEUE ============ */
   if (page === 'queue') {
     return (
-      <div className="h-screen bg-slate-100 text-slate-900 overflow-hidden flex flex-col">
+      <div className="h-[100dvh] bg-slate-100 text-slate-900 overflow-hidden flex flex-col">
         {/* App header */}
         <header className="bg-white border-b border-slate-200/80 px-4 sm:px-8 py-4 shadow-sm">
           <div className="max-w-2xl mx-auto w-full flex items-center gap-3">
@@ -318,7 +318,7 @@ const TelepathologyDashboard = () => {
     const btnPrimary = "inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm active:scale-95 transition-all";
 
     return (
-      <div className="h-screen bg-slate-100 text-slate-900 overflow-y-auto">
+      <div className="h-[100dvh] bg-slate-100 text-slate-900 overflow-y-auto">
         <div className="sticky top-0 bg-white/95 backdrop-blur border-b border-slate-200/80 px-4 sm:px-8 py-3.5 shadow-sm flex items-center gap-3 z-10">
           <button
             onClick={() => setPage('slide')}
@@ -465,7 +465,7 @@ const TelepathologyDashboard = () => {
   /* ============ PAGE 2 — SLIDE VIEWER ============ */
   // (This is the default return — reached when page is neither 'queue' nor 'details'.)
   return (
-    <div className="h-screen bg-slate-950 text-slate-900 overflow-hidden flex flex-col relative">
+    <div className="h-[100dvh] bg-slate-950 text-slate-900 overflow-hidden flex flex-col relative">
       {/* Top header bar */}
       <div className="flex items-center justify-between gap-2 px-3 sm:px-5 bg-slate-950 border-b border-slate-800/80" style={{ minHeight: '4rem' }}>
         <div className="flex items-center gap-3 min-w-0">
@@ -552,13 +552,11 @@ const TelepathologyDashboard = () => {
             })}
           </div>
 
-          {/* Hint until the required choices are made (eraser needs no color) */}
-          {(!annotationTool || (annotationTool !== 'eraser' && !annotationColor)) && (
+          {/* Colour defaults to black, so the only thing left to pick is a tool. */}
+          {!annotationTool && (
             <span className="flex items-center gap-1.5 text-[11px] text-amber-300 font-semibold shrink-0 ml-auto bg-amber-400/10 px-3 py-1.5 rounded-full ring-1 ring-amber-400/20">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-              {!annotationTool
-                ? `Select a ${!annotationColor ? 'color and ' : ''}tool to start`
-                : 'Select a color to start'}
+              Select a tool to start
             </span>
           )}
         </div>
