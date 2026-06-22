@@ -1,31 +1,26 @@
-// src/Header.jsx
+import { Building2 } from 'lucide-react';
+
+// Sticky top bar: facility branding on the left, the logged-in attendant on the right.
 export default function Header() {
   return (
-    <header className="flex justify-between items-center py-4 px-6 bg-white border-b shadow-sm mb-6 font-sans">
-      <h1 className="text-xl font-bold text-blue-900">DEVIPUR CHC: PATIENT INTAKE PORTAL</h1>
-      
-      <div className="flex items-center gap-3">
-        {/* User Icon SVG */}
-        <div className="flex items-center gap-2 text-gray-700">
-          <svg 
-            xmlns="http://www.w3.org/2000/svg" 
-            className="w-5 h-5" 
-            viewBox="0 0 24 24" 
-            fill="none" 
-            stroke="currentColor" 
-            strokeWidth="2" 
-            strokeLinecap="round" 
-            strokeLinejoin="round"
-          >
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-          </svg>
-          <span className="text-sm font-semibold">ANJALI DEVI, LAB ATTENDANT</span>
+    <header className="sticky top-0 z-10 bg-white border-b border-slate-200/80 shadow-sm">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm shrink-0">
+          <Building2 className="w-5 h-5 text-white" />
         </div>
-        
-        {/* Profile Avatar Placeholder */}
-        <div className="w-8 h-8 rounded-full bg-blue-100 border border-blue-200 flex items-center justify-center text-blue-700 font-bold text-xs">
-          AD
+        <div className="min-w-0">
+          <h1 className="text-base sm:text-lg font-bold tracking-tight text-slate-900 leading-tight">Devipur CHC</h1>
+          <p className="text-xs text-slate-500 font-medium">Patient Intake Portal</p>
+        </div>
+
+        <div className="ml-auto flex items-center gap-3">
+          <div className="hidden sm:block text-right">
+            <p className="text-sm font-semibold text-slate-800 leading-tight">Anjali Devi</p>
+            <p className="text-[11px] text-slate-500">Lab Attendant</p>
+          </div>
+          <div className="w-9 h-9 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-bold ring-1 ring-blue-200 shrink-0">
+            AD
+          </div>
         </div>
       </div>
     </header>

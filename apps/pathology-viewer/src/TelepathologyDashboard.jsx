@@ -19,7 +19,7 @@ import {
   Save, Eye, FileImage, Check, X,
 } from 'lucide-react';
 import WsiViewer from './WsiViewer';
-import { apiGet, apiPut } from './api';
+import { apiGet, apiPut, getCases } from './api';
 
 // The annotation colour palette shown in the slide toolbar (label + CSS hex).
 const COLORS = [
@@ -42,10 +42,10 @@ const TOOLS = [
   { id: 'eraser',   icon: Eraser,  label: 'Eraser' },
 ];
 
-// Kept outside the component so each case object keeps a stable identity
-// across re-renders — WsiViewer rebuilds its canvases when caseData changes,
-// which would wipe annotations on every unrelated state update.
-const cases = [
+// The built-in demo patients. Kept outside the component for stable identity.
+// Patients submitted from the CHC intake app are fetched from the backend and
+// appended to these at runtime (see `cases` inside the component).
+const BASE_CASES = [
   { id: 1, patient: 'Patient A', age: 45, gender: 'F', site: 'Lymph Node', status: 'Pending', date: '2026-05-23', image: 'IMG-20260525-WA0002.jpg' },
   { id: 2, patient: 'Patient B', age: 62, gender: 'M', site: 'Lymph Node', status: 'Pending', date: '2026-05-23', image: 'IMG-20260525-WA0003.jpg' },
   { id: 3, patient: 'Patient C', age: 29, gender: 'F', site: 'Lymph Node', status: 'Pending', date: '2026-05-22', image: 'IMG-20260525-WA0005.jpg' },
@@ -129,6 +129,7 @@ const TelepathologyDashboard = () => {
   const [annotatedImages, setAnnotatedImages] = useState(() => loadLS('pv_annotatedImages'));
   const [savedFlash, setSavedFlash] = useState(null);   // which Save button just fired
   const [modal, setModal] = useState(null);             // viewer overlay {type,title,...}
+  const [intakeCases, setIntakeCases] = useState([]);   // patients submitted from the CHC intake app
 
   // Mirror saved values into the local cache whenever they change.
   useEffect(() => { saveLS('pv_clinicalSaved', clinicalSaved); }, [clinicalSaved]);
@@ -161,8 +162,35 @@ const TelepathologyDashboard = () => {
     return () => { cancelled = true; };
   }, []);
 
+  // Keep the queue in sync with patients submitted from the CHC intake app.
+  // Polls every few seconds so a newly submitted patient appears LIVE, without
+  // a refresh. It only appends genuinely new cases (by id) and keeps existing
+  // case objects as-is, so a slide you're viewing/annotating is never disturbed.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const list = await getCases();
+        if (cancelled || !Array.isArray(list)) return;
+        setIntakeCases(prev => {
+          const known = new Set(prev.map(c => c.id));
+          const additions = list.filter(c => !known.has(c.id));
+          return additions.length ? [...prev, ...additions] : prev; // unchanged ⇒ no re-render
+        });
+      } catch {
+        /* backend offline — keep the built-in demo cases */
+      }
+    };
+    load();
+    const timer = setInterval(load, 4000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
   const viewerApiRef = useRef(null);
 
+  // The queue = built-in demo patients + ones submitted from CHC intake. The
+  // element objects stay stable, so an open case keeps its identity.
+  const cases = [...BASE_CASES, ...intakeCases];
   const currentCase = cases.find(c => c.id === activeCase) || cases[0];
   const id = activeCase;
   const defaultClinical = `Palpable nodule identified in the ${currentCase.site.toLowerCase()}.`;

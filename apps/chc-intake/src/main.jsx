@@ -1,8 +1,8 @@
-// apps/chc-intake/src/main.jsx
+// Entry point: boots React and mounts the app, pulling in Tailwind via index.css.
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App.jsx';
-import './output.css'; // You'll create this next
+import './index.css';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

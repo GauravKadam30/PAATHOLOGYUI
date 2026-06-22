@@ -1,62 +1,77 @@
-// src/PatientForm.jsx
-export default function PatientForm() {
-  // Enhanced input styles with focus ring for better usability
-  const input = "w-full border border-gray-300 p-2.5 rounded-md text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all";
-  const label = "block text-xs font-bold text-gray-600 mb-1.5 uppercase tracking-wide";
+import { ClipboardList } from 'lucide-react';
 
+// Shared field styling, kept in one place so every input looks identical.
+const inputCls =
+  "w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-2.5 text-sm text-slate-800 " +
+  "placeholder:text-slate-400 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition";
+const labelCls = "block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5";
+
+function Field({ label, span = 1, children }) {
   return (
-    <div className="bg-white p-8 rounded-xl border border-gray-200 shadow-sm h-full">
-      <h2 className="text-xl font-bold mb-6 border-b pb-2 text-gray-900">1. Patient Information</h2>
-      
-      {/* 12-column grid ensures reliable 50/50 split on desktop */}
-      <div className="grid grid-cols-12 gap-x-6 gap-y-6">
-        
-        {/* Left Column (col-span-6) */}
-        <div className="col-span-6">
-          <label className={label}>CHC Patient ID</label>
-          <input className={input} placeholder="e.g. 123456789012" />
-        </div>
-        
-        {/* Right Column (col-span-6) */}
-        <div className="col-span-6">
-          <label className={label}>Patient Name</label>
-          <input className={input} placeholder="Full Name" />
-        </div>
+    <div className={span === 2 ? 'sm:col-span-2' : ''}>
+      <label className={labelCls}>{label}</label>
+      {children}
+    </div>
+  );
+}
 
-        <div className="col-span-6">
-          <label className={label}>ABHA ID</label>
-          <input className={input} placeholder="00-0000-0000-0000" />
+// Controlled form. `form` holds the values; `setField(key, value)` updates one.
+export default function PatientForm({ form, setField }) {
+  return (
+    <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6">
+      <div className="flex items-center gap-2.5 mb-5">
+        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+          <ClipboardList className="w-4 h-4 text-blue-600" />
         </div>
-        <div className="col-span-6">
-          <label className={label}>Age</label>
-          <input type="number" className={input} placeholder="Years" />
-        </div>
-
-        <div className="col-span-6">
-          <label className={label}>Nikshay ID</label>
-          <input className={input} />
-        </div>
-        <div className="col-span-6">
-          <label className={label}>Gender</label>
-          <select className={`${input} bg-white`}>
-            <option value="">Select Gender</option>
-            <option value="male">Male</option>
-            <option value="female">Female</option>
-            <option value="other">Other</option>
-          </select>
-        </div>
-
-        {/* Full-width fields */}
-        <div className="col-span-12">
-          <label className={label}>Consultant Name</label>
-          <input className={input} />
-        </div>
-
-        <div className="col-span-12">
-          <label className={label}>OPD Prescription & Notes</label>
-          <textarea className={`${input} h-32 resize-none`} placeholder="Enter patient clinical notes..." />
+        <div>
+          <h2 className="text-sm font-bold text-slate-800">Patient Information</h2>
+          <p className="text-xs text-slate-400">NIKSHAY / ABHA registration details</p>
         </div>
       </div>
-    </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Field label="CHC Patient ID">
+          <input className={inputCls} placeholder="e.g. 123456789012"
+            value={form.chcId} onChange={(e) => setField('chcId', e.target.value)} />
+        </Field>
+        <Field label="Patient Name">
+          <input className={inputCls} placeholder="Full name"
+            value={form.name} onChange={(e) => setField('name', e.target.value)} />
+        </Field>
+
+        <Field label="ABHA ID">
+          <input className={inputCls} placeholder="00-0000-0000-0000"
+            value={form.abha} onChange={(e) => setField('abha', e.target.value)} />
+        </Field>
+        <Field label="Age">
+          <input type="number" className={inputCls} placeholder="Years"
+            value={form.age} onChange={(e) => setField('age', e.target.value)} />
+        </Field>
+
+        <Field label="Nikshay ID">
+          <input className={inputCls} placeholder="e.g. NK-000000"
+            value={form.nikshay} onChange={(e) => setField('nikshay', e.target.value)} />
+        </Field>
+        <Field label="Gender">
+          <select className={`${inputCls} appearance-none bg-white`}
+            value={form.gender} onChange={(e) => setField('gender', e.target.value)}>
+            <option value="" disabled>Select gender</option>
+            <option value="F">Female</option>
+            <option value="M">Male</option>
+            <option value="Other">Other</option>
+          </select>
+        </Field>
+
+        <Field label="Consultant Name" span={2}>
+          <input className={inputCls} placeholder="Referring consultant"
+            value={form.consultant} onChange={(e) => setField('consultant', e.target.value)} />
+        </Field>
+
+        <Field label="OPD Prescription & Notes" span={2}>
+          <textarea className={`${inputCls} h-32 resize-none`} placeholder="Enter patient clinical notes…"
+            value={form.notes} onChange={(e) => setField('notes', e.target.value)} />
+        </Field>
+      </div>
+    </section>
   );
 }

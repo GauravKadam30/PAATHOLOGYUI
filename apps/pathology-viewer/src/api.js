@@ -1,19 +1,49 @@
 /**
  * Thin client for the shared backend (apps/server).
  *
- * The base URL comes from VITE_API_URL (set it to your hosted/tunnelled server
- * for true cross-machine sharing); it defaults to localhost for single-machine
- * use. These functions mirror localStorage's get/set so the dashboard can use
- * the server as the source of truth while keeping the browser cache as a fallback.
+ * These functions mirror localStorage's get/set so the dashboard can use the
+ * server as the source of truth while keeping the browser cache as a fallback.
  */
-const RAW = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-export const API_BASE = RAW.replace(/\/+$/, ''); // strip any trailing slash
+
+// Work out where the backend lives. Priority:
+//   1. VITE_API_URL if you set it (a LAN IP, hosted URL, etc.).
+//   2. Auto-detect on browser sandboxes like StackBlitz / WebContainers, where
+//      the app runs at a "…--5173…" address and the backend is the matching
+//      "…--3001…" address — so two PCs can share with zero setup.
+//   3. http://localhost:3001 for a normal single-PC run.
+function resolveApiBase() {
+  const explicit = import.meta.env.VITE_API_URL;
+  if (explicit) return explicit;
+
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname, host } = window.location;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:3001';
+    }
+    // StackBlitz / WebContainer addresses encode the port as "--5173";
+    // the backend is the same address with "--3001".
+    if (host.includes('--5173')) {
+      return `${protocol}//${host.replace('--5173', '--3001')}`;
+    }
+  }
+  return 'http://localhost:3001';
+}
+
+export const API_BASE = resolveApiBase().replace(/\/+$/, ''); // strip any trailing slash
 
 // Read a stored value by key. Throws if the server is unreachable, so callers
 // can fall back to the local cache.
 export async function apiGet(key) {
   const res = await fetch(`${API_BASE}/api/store/${encodeURIComponent(key)}`);
   if (!res.ok) throw new Error(`GET ${key} failed: ${res.status}`);
+  return res.json();
+}
+
+// Read the list of patients submitted from the CHC intake app. Throws if the
+// server is unreachable so the caller can just show the built-in demo cases.
+export async function getCases() {
+  const res = await fetch(`${API_BASE}/api/cases`);
+  if (!res.ok) throw new Error(`GET cases failed: ${res.status}`);
   return res.json();
 }
 

@@ -24,6 +24,11 @@ import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X } from 'lucide-react'; // 
 // fabric v7 has no named `fabric` export, so we use the whole module namespace.
 const fabric = FabricModule;
 
+// Demo slides are filenames served from /public; slides submitted via CHC intake
+// are full data-URLs. Use the value directly if it's already a URL, else prefix "/".
+const resolveImageUrl = (image) =>
+  /^(data:|https?:|blob:)/.test(image || '') ? image : `/${image}`;
+
 // A custom mouse cursor shaped like an eraser, built from an inline SVG encoded
 // as a data-URI (no separate image file needed). The trailing "1 15" is the
 // cursor hotspot — the active pixel sits at the eraser's lower-left tip so you
@@ -88,7 +93,7 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
 
     const viewer = OpenSeadragon({
       element: containerRef.current,
-      tileSources: { type: 'image', url: `/${caseData.image}` }, // the JPG in /public
+      tileSources: { type: 'image', url: resolveImageUrl(caseData.image) }, // the JPG in /public
       animationTime: 0.5,   // seconds for zoom/pan spring animation
       blendTime: 0.1,       // seconds for image tiles to fade in
       // The default sprite-image buttons are replaced by our own styled
@@ -234,7 +239,7 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
       const im = new Image();
       im.onload = () => resolve(im);
       im.onerror = () => resolve(null);
-      im.src = `/${caseData.image}`;
+      im.src = resolveImageUrl(caseData.image);
     });
     if (!img) return null;
     const W = img.naturalWidth, H = img.naturalHeight;

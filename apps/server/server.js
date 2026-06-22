@@ -50,6 +50,25 @@ app.put('/api/store/:key', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Intake cases ---
+// Patients submitted from the CHC intake app, shown in the viewer's queue.
+// Each case mirrors the viewer's format: { id, patient, age, gender, site,
+// status, date, image } where `image` is a data-URL of the uploaded slide.
+app.get('/api/cases', (_req, res) => {
+  const db = readAll();
+  res.json(db.__cases || []);
+});
+app.post('/api/cases', (req, res) => {
+  const db = readAll();
+  const list = db.__cases || [];
+  // Assign a stable id (100+) so it never clashes with the viewer's demo cases.
+  const newCase = { ...req.body, id: 100 + list.length };
+  list.push(newCase);
+  db.__cases = list;
+  writeAll(db);
+  res.json(newCase);
+});
+
 // Simple health/landing check
 app.get('/', (_req, res) => res.send('Telepathology Console API is running.'));
 

@@ -1,9 +1,24 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-@layer base {
-  body {
-    @apply font-sans text-gray-900 antialiased;
-  }
+/* ===== Global typography & rendering ===== */
+html {
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
+
+::selection {
+  background: #bfdbfe; /* blue-200 */
+  color: #1e3a8a;      /* blue-900 */
+}
+
+/* Slim scrollbars */
+* { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* Consistent focus treatment for form controls */
+input, select, textarea { outline: none; }
+button { -webkit-tap-highlight-color: transparent; }

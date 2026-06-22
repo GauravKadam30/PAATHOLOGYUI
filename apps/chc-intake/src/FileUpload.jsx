@@ -1,41 +1,72 @@
-// src/FileUpload.jsx
-export default function FileUpload() {
+import { useRef } from 'react';
+import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2 } from 'lucide-react';
+
+// `image` is the chosen slide as a data-URL (or null). `onFile(file)` is called
+// when a file is picked; `onSubmit()` submits the case; `busy` disables it.
+export default function FileUpload({ image, onFile, onSubmit, busy }) {
+  const inputRef = useRef(null);
+
   return (
-    <div className="bg-white p-6 rounded-lg border border-gray-200 shadow-sm h-full font-sans">
-      <h2 className="text-lg font-bold text-gray-900 mb-6 border-b pb-2">2. FNAC Slide Image Upload</h2>
-      
-      {/* Upload Zone */}
-      <div className="border-2 border-dashed border-gray-300 p-8 text-center rounded-xl cursor-pointer hover:border-blue-500 transition-colors flex flex-col items-center gap-4 mb-6">
-        <div className="bg-blue-50 p-4 rounded-full">
-          <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-          </svg>
+    <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6 h-full flex flex-col">
+      <div className="flex items-center gap-2.5 mb-5">
+        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+          <Microscope className="w-4 h-4 text-blue-600" />
         </div>
-        <p className="text-sm font-bold text-gray-600">CLICK TO UPLOAD OR DRAG & DROP FNAC SLIDE IMAGE</p>
-      </div>
-
-      {/* Static Preview Pane */}
-      <div className="mb-6 border border-gray-200 rounded-lg p-4 bg-gray-50">
-        <p className="text-xs font-bold text-gray-500 uppercase mb-2">Image Preview</p>
-        <div className="w-full h-32 bg-gray-200 rounded border-2 border-dashed border-gray-300 flex items-center justify-center text-gray-400">
-          <span>[No Image Selected]</span>
+        <div>
+          <h2 className="text-sm font-bold text-slate-800">FNAC Slide Image</h2>
+          <p className="text-xs text-slate-400">Attach the cytology slide photo</p>
         </div>
       </div>
 
-      {/* Upload Status Section */}
-      <div className="mt-6">
-        <div className="flex justify-between text-xs font-semibold text-gray-700 mb-2">
-          <span>Upload Status</span>
-          <span>0%</span>
+      {/* Hidden native file picker, opened by the dropzone */}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }}
+      />
+
+      {/* Dropzone — clicking it opens the picker */}
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        className="w-full rounded-xl border-2 border-dashed border-slate-200 hover:border-blue-400 hover:bg-blue-50/40 transition-colors px-6 py-8 text-center flex flex-col items-center gap-3"
+      >
+        <div className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
+          <UploadCloud className="w-6 h-6 text-blue-600" />
         </div>
-        <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden border border-gray-300">
-          <div className="h-full w-0 transition-all duration-300"></div>
+        <div>
+          <p className="text-sm font-semibold text-slate-700">
+            {image ? 'Choose a different image' : 'Click to upload or drag & drop'}
+          </p>
+          <p className="text-xs text-slate-400 mt-0.5">PNG or JPG, up to 10 MB</p>
         </div>
-        
-        <button className="w-full mt-6 bg-blue-900 text-white py-3 rounded-lg font-bold hover:bg-blue-800 transition-all flex items-center justify-center gap-2">
-          SUBMIT CASE TO EPTB HUB →
-        </button>
+      </button>
+
+      {/* Preview pane — shows the uploaded image, or a placeholder */}
+      <div className="mt-5">
+        <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Image Preview</p>
+        {image ? (
+          <img src={image} alt="Slide preview" className="w-full h-44 object-contain rounded-xl bg-slate-50 ring-1 ring-slate-200" />
+        ) : (
+          <div className="w-full h-44 rounded-xl bg-slate-50 ring-1 ring-slate-200 flex flex-col items-center justify-center gap-1.5 text-slate-400">
+            <ImageIcon className="w-6 h-6" />
+            <span className="text-xs font-medium">No image selected</span>
+          </div>
+        )}
       </div>
-    </div>
+
+      {/* Submit */}
+      <button
+        onClick={onSubmit}
+        disabled={busy}
+        className="mt-6 w-full inline-flex items-center justify-center gap-2 py-3 bg-blue-600 text-white rounded-xl font-semibold text-sm tracking-wide hover:bg-blue-700 active:scale-[0.99] shadow-md shadow-blue-600/20 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+      >
+        {busy
+          ? <><Loader2 className="w-4 h-4 animate-spin" /> Submitting…</>
+          : <><Send className="w-4 h-4" /> Submit Case to EPTB Hub</>}
+      </button>
+    </section>
   );
 }
