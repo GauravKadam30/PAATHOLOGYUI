@@ -16,10 +16,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   Clock, Pencil, Square, Circle, Eraser, ArrowLeft, FileText, Download,
   Microscope, ChevronRight, ClipboardList, Stethoscope, Pill, ShieldCheck,
-  Save, Eye, FileImage, Check, X,
+  Save, Eye, FileImage, Check, X, Loader2,
 } from 'lucide-react';
 import WsiViewer from './WsiViewer';
-import { apiGet, apiPut, getCases } from './api';
+import { apiGet, apiPut, getCases, getCaseImage } from './api';
 
 // The annotation colour palette shown in the slide toolbar (label + CSS hex).
 const COLORS = [
@@ -130,6 +130,7 @@ const TelepathologyDashboard = () => {
   const [savedFlash, setSavedFlash] = useState(null);   // which Save button just fired
   const [modal, setModal] = useState(null);             // viewer overlay {type,title,...}
   const [intakeCases, setIntakeCases] = useState([]);   // patients submitted from the CHC intake app
+  const [loadingCases, setLoadingCases] = useState(true); // initial fetch of intake patients in flight
 
   // Mirror saved values into the local cache whenever they change.
   useEffect(() => { saveLS('pv_clinicalSaved', clinicalSaved); }, [clinicalSaved]);
@@ -168,7 +169,7 @@ const TelepathologyDashboard = () => {
   // case objects as-is, so a slide you're viewing/annotating is never disturbed.
   useEffect(() => {
     let cancelled = false;
-    const load = async () => {
+    const load = async (initial) => {
       try {
         const list = await getCases();
         if (cancelled || !Array.isArray(list)) return;
@@ -179,10 +180,12 @@ const TelepathologyDashboard = () => {
         });
       } catch {
         /* backend offline — keep the built-in demo cases */
+      } finally {
+        if (initial && !cancelled) setLoadingCases(false);
       }
     };
-    load();
-    const timer = setInterval(load, 4000);
+    load(true);
+    const timer = setInterval(() => load(false), 4000);
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
@@ -198,6 +201,14 @@ const TelepathologyDashboard = () => {
   const openCase = (cid) => {
     setActiveCase(cid);
     setPage('slide');
+    // Intake patients arrive without their image (kept out of the list for
+    // speed); fetch it now so the WSI viewer can show the slide.
+    const c = intakeCases.find(x => x.id === cid);
+    if (c && c.hasImage && !c.image) {
+      getCaseImage(cid)
+        .then(img => setIntakeCases(prev => prev.map(x => (x.id === cid ? { ...x, image: img } : x))))
+        .catch(() => {});
+    }
   };
 
   const enableAnnotation = () => {
@@ -330,6 +341,13 @@ const TelepathologyDashboard = () => {
                   <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-500 group-hover:translate-x-0.5 transition-all shrink-0" />
                 </div>
               ))}
+              {/* Loading indicator while submitted patients are being fetched */}
+              {loadingCases && (
+                <div className="flex items-center justify-center gap-2 px-4 sm:px-5 py-4 text-sm text-slate-400 border-t border-slate-100">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Loading patients…
+                </div>
+              )}
             </div>
           </div>
         </div>

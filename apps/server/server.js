@@ -54,9 +54,19 @@ app.put('/api/store/:key', (req, res) => {
 // Patients submitted from the CHC intake app, shown in the viewer's queue.
 // Each case mirrors the viewer's format: { id, patient, age, gender, site,
 // status, date, image } where `image` is a data-URL of the uploaded slide.
+// List cases WITHOUT the (large) image data so the viewer's queue loads fast;
+// `hasImage` tells the client an image can be fetched per-case when opened.
 app.get('/api/cases', (_req, res) => {
   const db = readAll();
-  res.json(db.__cases || []);
+  const list = (db.__cases || []).map(({ image, ...meta }) => ({ ...meta, hasImage: !!image }));
+  res.json(list);
+});
+// Full case (including the image) — fetched when a patient's slide is opened.
+app.get('/api/cases/:id', (req, res) => {
+  const db = readAll();
+  const found = (db.__cases || []).find(c => String(c.id) === String(req.params.id));
+  if (!found) return res.status(404).json({ error: 'not found' });
+  res.json(found);
 });
 app.post('/api/cases', (req, res) => {
   const db = readAll();

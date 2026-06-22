@@ -19,7 +19,7 @@
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from 'react';
 import OpenSeadragon from 'openseadragon';                 // deep-zoom slide viewer
 import * as FabricModule from 'fabric';                    // 2D canvas drawing library
-import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X } from 'lucide-react'; // control icons
+import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X, Loader2 } from 'lucide-react'; // control icons
 
 // fabric v7 has no named `fabric` export, so we use the whole module namespace.
 const fabric = FabricModule;
@@ -444,6 +444,15 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
       : 'w-full h-full bg-slate-900 relative'}>
       {/* Layer 1: OpenSeadragon renders the slide into this div. */}
       <div ref={containerRef} className="w-full h-full absolute inset-0" />
+
+      {/* Shown briefly while an intake patient's image is still being fetched. */}
+      {caseData?.hasImage && !caseData?.image && (
+        <div className="absolute inset-0 z-[55] flex items-center justify-center text-slate-400">
+          <span className="flex items-center gap-2 text-sm">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading slide…
+          </span>
+        </div>
+      )}
 
       {/* Layer 2: fabric annotation canvas. Shown only while annotating so the
           original slide stays clean afterwards — the saved annotated image is

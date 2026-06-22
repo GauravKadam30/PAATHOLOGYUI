@@ -39,12 +39,21 @@ export async function apiGet(key) {
   return res.json();
 }
 
-// Read the list of patients submitted from the CHC intake app. Throws if the
-// server is unreachable so the caller can just show the built-in demo cases.
+// Read the list of patients submitted from the CHC intake app (metadata only —
+// no image — so the queue loads fast). Throws if the server is unreachable.
 export async function getCases() {
   const res = await fetch(`${API_BASE}/api/cases`);
   if (!res.ok) throw new Error(`GET cases failed: ${res.status}`);
   return res.json();
+}
+
+// Fetch one submitted case's slide image (data-URL), loaded lazily when the
+// patient's slide is opened.
+export async function getCaseImage(id) {
+  const res = await fetch(`${API_BASE}/api/cases/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`GET case ${id} failed: ${res.status}`);
+  const full = await res.json();
+  return full.image || null;
 }
 
 // Save a value by key. Fire-and-forget: never throws — if the backend is down
