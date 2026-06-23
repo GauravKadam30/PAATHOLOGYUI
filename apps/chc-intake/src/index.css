@@ -1,24 +1,33 @@
+/*
+ * index.css — the global styling for the whole app.
+ *
+ * The one line below pulls in "Tailwind", a styling toolkit. It's what makes all
+ * the short className="..." labels in the .jsx files actually produce colours,
+ * spacing, rounded corners, etc. The rest of this file sets a few page-wide
+ * defaults (font, text-selection colour, scrollbars).
+ */
 @import "tailwindcss";
 
-/* ===== Global typography & rendering ===== */
+/* ===== Default font and crisper text everywhere ===== */
 html {
   font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
-  -webkit-font-smoothing: antialiased;
+  -webkit-font-smoothing: antialiased;   /* smoother text on Mac/Chrome */
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
+/* Colour shown when you highlight text with the mouse */
 ::selection {
-  background: #bfdbfe; /* blue-200 */
-  color: #1e3a8a;      /* blue-900 */
+  background: #bfdbfe; /* light blue */
+  color: #1e3a8a;      /* dark blue */
 }
 
-/* Slim scrollbars */
+/* Thin, subtle scrollbars instead of the chunky default ones */
 * { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
 *::-webkit-scrollbar { width: 6px; height: 6px; }
 *::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
 *::-webkit-scrollbar-track { background: transparent; }
 
-/* Consistent focus treatment for form controls */
+/* Small tidy-ups for form controls and buttons */
 input, select, textarea { outline: none; }
-button { -webkit-tap-highlight-color: transparent; }
+button { -webkit-tap-highlight-color: transparent; } /* no grey flash when tapped on mobile */

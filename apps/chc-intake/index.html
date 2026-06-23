@@ -1,12 +1,21 @@
 <!DOCTYPE html>
+<!--
+  index.html — the single web page the browser loads first.
+  It is almost empty on purpose: the <div id="root"> is a blank box, and the
+  <script> line loads src/main.jsx, which then builds the whole app inside that box.
+-->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Makes the page size correctly on phones -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The text shown on the browser tab -->
     <title>CHC Patient Intake</title>
   </head>
   <body>
+    <!-- The app gets drawn inside this empty box (see src/main.jsx) -->
     <div id="root"></div>
+    <!-- Loads and starts the app's code -->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

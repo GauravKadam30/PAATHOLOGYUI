@@ -1,11 +1,23 @@
-import { ClipboardList } from 'lucide-react';
+import { ClipboardList } from 'lucide-react';   // a "clipboard" icon for the card title
 
-// Shared field styling, kept in one place so every input looks identical.
+/*
+ * PatientForm.jsx — the card on the left containing all the patient detail boxes.
+ *
+ * It is a "controlled" form: it does NOT keep its own values. Instead App.jsx
+ * holds the values (in `form`) and passes them in, along with a `setField`
+ * function this form calls whenever the user types. That keeps every value in
+ * one place (App.jsx), which is what lets the Submit button send them all.
+ */
+
+// These long strings are styling (Tailwind classes) shared by every input box and
+// every label, so they all look identical. Kept here so we don't repeat them.
 const inputCls =
   "w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-2.5 text-sm text-slate-800 " +
   "placeholder:text-slate-400 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition";
 const labelCls = "block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5";
 
+// A small reusable "label + box" wrapper. `span={2}` makes the field stretch
+// across both columns (used for the wide Consultant and Notes fields).
 function Field({ label, span = 1, children }) {
   return (
     <div className={span === 2 ? 'sm:col-span-2' : ''}>
@@ -15,10 +27,11 @@ function Field({ label, span = 1, children }) {
   );
 }
 
-// Controlled form. `form` holds the values; `setField(key, value)` updates one.
+// The form card. `form` = the current values; `setField` = update one of them.
 export default function PatientForm({ form, setField }) {
   return (
     <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6">
+      {/* Card title with an icon badge */}
       <div className="flex items-center gap-2.5 mb-5">
         <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
           <ClipboardList className="w-4 h-4 text-blue-600" />
@@ -29,6 +42,11 @@ export default function PatientForm({ form, setField }) {
         </div>
       </div>
 
+      {/* The fields, laid out in two columns (one column on phones).
+          For every box:
+            value={form.X}   → shows what's currently stored
+            onChange=...      → on each keystroke, save the new text back to App
+          (e.target.value is whatever the user just typed.) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label="CHC Patient ID">
           <input className={inputCls} placeholder="e.g. 123456789012"
@@ -53,6 +71,8 @@ export default function PatientForm({ form, setField }) {
             value={form.nikshay} onChange={(e) => setField('nikshay', e.target.value)} />
         </Field>
         <Field label="Gender">
+          {/* The values are "F"/"M"/"Other" to match how the Pathology Viewer
+              shows gender for the other patients. */}
           <select className={`${inputCls} appearance-none bg-white`}
             value={form.gender} onChange={(e) => setField('gender', e.target.value)}>
             <option value="" disabled>Select gender</option>
@@ -62,6 +82,7 @@ export default function PatientForm({ form, setField }) {
           </select>
         </Field>
 
+        {/* Full-width fields (span={2}) */}
         <Field label="Consultant Name" span={2}>
           <input className={inputCls} placeholder="Referring consultant"
             value={form.consultant} onChange={(e) => setField('consultant', e.target.value)} />

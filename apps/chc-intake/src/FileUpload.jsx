@@ -1,13 +1,24 @@
 import { useRef } from 'react';
-import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2 } from 'lucide-react';
+import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2 } from 'lucide-react'; // icons
 
-// `image` is the chosen slide as a data-URL (or null). `onFile(file)` is called
-// when a file is picked; `onSubmit()` submits the case; `busy` disables it.
+/*
+ * FileUpload.jsx — the card on the right: pick a slide image, see a preview,
+ * and press Submit.
+ *
+ * Like the form, this card doesn't keep its own data; App.jsx does. It receives:
+ *   image    — the chosen picture (as text), or null if none yet
+ *   onFile   — function to call when the user picks a file
+ *   onSubmit — function to call when the Submit button is pressed
+ *   busy     — true while submitting (used to disable the button)
+ */
 export default function FileUpload({ image, onFile, onSubmit, busy }) {
+  // A "ref" is a handle to a hidden element on the page. We use it to click the
+  // (invisible) file picker from our own nicer-looking upload box below.
   const inputRef = useRef(null);
 
   return (
     <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6 h-full flex flex-col">
+      {/* Card title with an icon badge */}
       <div className="flex items-center gap-2.5 mb-5">
         <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
           <Microscope className="w-4 h-4 text-blue-600" />
@@ -18,16 +29,18 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
         </div>
       </div>
 
-      {/* Hidden native file picker, opened by the dropzone */}
+      {/* The real file picker is hidden (it looks ugly by default). When a file is
+          chosen, we hand it to App via onFile, then clear it so the SAME file can
+          be re-picked later if needed. */}
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/*"        // only allow image files
         className="hidden"
         onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }}
       />
 
-      {/* Dropzone — clicking it opens the picker */}
+      {/* Our nice-looking upload box. Clicking it triggers the hidden picker above. */}
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
@@ -37,6 +50,7 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
           <UploadCloud className="w-6 h-6 text-blue-600" />
         </div>
         <div>
+          {/* Wording changes once an image is already chosen */}
           <p className="text-sm font-semibold text-slate-700">
             {image ? 'Choose a different image' : 'Click to upload or drag & drop'}
           </p>
@@ -44,7 +58,7 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
         </div>
       </button>
 
-      {/* Preview pane — shows the uploaded image, or a placeholder */}
+      {/* Preview area — shows the chosen image, or a placeholder if none yet. */}
       <div className="mt-5">
         <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Image Preview</p>
         {image ? (
@@ -57,7 +71,7 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
         )}
       </div>
 
-      {/* Submit */}
+      {/* Submit button. While submitting (busy) it's disabled and shows a spinner. */}
       <button
         onClick={onSubmit}
         disabled={busy}
