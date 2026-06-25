@@ -22,6 +22,21 @@ html {
   color: #1e3a8a;      /* dark blue */
 }
 
+/* A calm but clearly visible, professional page backdrop instead of a flat
+   colour: a three-colour gradient "mesh" (blue top-left, teal top-right, indigo
+   along the bottom) over a soft dot grid, on a cool base colour. The white form
+   cards sit brightly on top, so the colour stays tasteful rather than loud. */
+.clinical-bg {
+  background-color: #e9edf3;          /* cool light base so white cards pop */
+  background-image:
+    radial-gradient(1200px circle at 6% -10%, rgba(37, 99, 235, 0.20), transparent 46%),
+    radial-gradient(1100px circle at 100% -4%, rgba(13, 148, 136, 0.17), transparent 46%),
+    radial-gradient(1000px circle at 50% 118%, rgba(79, 70, 229, 0.14), transparent 52%),
+    radial-gradient(rgba(30, 41, 59, 0.07) 1.3px, transparent 1.6px);
+  background-size: 100% 100%, 100% 100%, 100% 100%, 24px 24px;
+  background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+}
+
 /* Thin, subtle scrollbars instead of the chunky default ones */
 * { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
 *::-webkit-scrollbar { width: 6px; height: 6px; }

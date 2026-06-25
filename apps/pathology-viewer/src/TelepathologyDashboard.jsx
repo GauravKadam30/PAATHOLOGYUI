@@ -77,14 +77,17 @@ const saveLS = (key, value) => {
 // page. `children` is the card body. (Destructuring `icon: Icon` lets us use it
 // as a JSX component, which must be capitalised.)
 const SectionCard = ({ icon: Icon, title, children }) => (
-  <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6">
-    <div className="flex items-center gap-2.5 mb-4">
+  // `h-full flex flex-col` lets the card fill its grid cell so cards sitting in
+  // the same row share one height (no ragged, scattered edges). The body wrapper
+  // flexes, so a textarea inside can grow and pin its buttons to the card bottom.
+  <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6 h-full flex flex-col">
+    <div className="flex items-center gap-2.5 mb-4 shrink-0">
       <div className="w-7 h-7 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
         <Icon className="w-3.5 h-3.5 text-blue-600" />
       </div>
       <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">{title}</h3>
     </div>
-    {children}
+    <div className="flex-1 flex flex-col min-h-0">{children}</div>
   </section>
 );
 
@@ -295,11 +298,19 @@ const TelepathologyDashboard = () => {
 
   /* ============ PAGE 1 — FNAC QUEUE ============ */
   if (page === 'queue') {
+    // Quick at-a-glance counts shown in the summary tiles below the header.
+    const pendingCount = cases.filter(c => c.status === 'Pending').length;
+    const stats = [
+      { label: 'Total',    value: cases.length,                icon: ClipboardList, tint: 'bg-blue-50 text-blue-600' },
+      { label: 'Pending',  value: pendingCount,                icon: Clock,         tint: 'bg-amber-50 text-amber-600' },
+      { label: 'Reported', value: cases.length - pendingCount, icon: ShieldCheck,   tint: 'bg-emerald-50 text-emerald-600' },
+    ];
+
     return (
-      <div className="h-[100dvh] bg-slate-100 text-slate-900 overflow-hidden flex flex-col">
+      <div className="h-[100dvh] bg-slate-100 clinical-bg text-slate-900 overflow-hidden flex flex-col">
         {/* App header */}
-        <header className="bg-white border-b border-slate-200/80 px-4 sm:px-8 py-4 shadow-sm">
-          <div className="max-w-2xl mx-auto w-full flex items-center gap-3">
+        <header className="shrink-0 bg-white border-b border-slate-200/80 px-4 sm:px-8 py-4 shadow-sm">
+          <div className="max-w-6xl mx-auto w-full flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm shrink-0">
               <Microscope className="w-5 h-5 text-white" />
             </div>
@@ -313,44 +324,82 @@ const TelepathologyDashboard = () => {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto px-0 sm:px-8">
-          <div className="max-w-2xl mx-auto w-full">
-            <p className="hidden sm:block text-xs font-semibold text-slate-400 uppercase tracking-widest mt-6 mb-2 px-1">
-              Worklist — select a patient to open the slide
-            </p>
-            {/* One clickable row per patient; tapping it opens that patient's slide. */}
-            <div className="bg-white sm:rounded-2xl sm:shadow-sm ring-1 ring-slate-200/70 overflow-hidden sm:mb-8">
-              {cases.map((c, i) => (
-                <div
-                  key={c.id}
-                  onClick={() => openCase(c.id)}
-                  className="group flex items-center gap-3 sm:gap-4 px-4 sm:px-5 py-4 border-b border-slate-100 last:border-b-0 cursor-pointer transition-colors hover:bg-blue-50/60"
-                >
-                  <div className={`w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${AVATAR_TINTS[i % AVATAR_TINTS.length]}`}>
-                    {initialsOf(c.patient)}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-slate-800 group-hover:text-blue-700 transition-colors">{c.patient}</span>
-                      <StatusPill status={c.status} />
+        {/* Main work area — fills all the space between header and footer so the
+            page never looks half-empty on a large screen. */}
+        <main className="flex-1 min-h-0 px-4 sm:px-8 py-5 sm:py-6 flex flex-col">
+          <div className="max-w-6xl mx-auto w-full flex-1 min-h-0 flex flex-col">
+            {/* Summary tiles */}
+            <div className="grid grid-cols-3 gap-3 sm:gap-4 mb-4 sm:mb-5 shrink-0">
+              {stats.map((s) => {
+                const Icon = s.icon;
+                return (
+                  <div key={s.label} className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm px-3.5 sm:px-5 py-3.5 sm:py-4 flex items-center gap-3 sm:gap-4">
+                    <div className={`w-9 h-9 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center shrink-0 ${s.tint}`}>
+                      <Icon className="w-4 h-4 sm:w-5 sm:h-5" />
                     </div>
-                    <p className="text-xs text-slate-500 font-medium mt-0.5 truncate">
-                      {c.site} &nbsp;·&nbsp; {c.age} yrs / {c.gender} &nbsp;·&nbsp; {c.date}
-                    </p>
+                    <div className="min-w-0">
+                      <p className="text-xl sm:text-2xl font-bold text-slate-900 leading-none">{s.value}</p>
+                      <p className="text-[11px] sm:text-xs text-slate-500 font-medium mt-1 truncate">{s.label}</p>
+                    </div>
                   </div>
-                  <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-500 group-hover:translate-x-0.5 transition-all shrink-0" />
-                </div>
-              ))}
-              {/* Loading indicator while submitted patients are being fetched */}
-              {loadingCases && (
-                <div className="flex items-center justify-center gap-2 px-4 sm:px-5 py-4 text-sm text-slate-400 border-t border-slate-100">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Loading patients…
-                </div>
-              )}
+                );
+              })}
+            </div>
+
+            {/* Worklist panel — a single framed surface that stretches to fill the
+                remaining height, so spare space reads as part of the worklist
+                rather than as empty backdrop. Rows scroll inside it. */}
+            <div className="flex-1 min-h-0 flex flex-col bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm overflow-hidden">
+              <div className="shrink-0 flex items-center justify-between gap-2 px-4 sm:px-6 py-3.5 border-b border-slate-100">
+                <h2 className="text-sm font-bold text-slate-800">Patient Worklist</h2>
+                <span className="text-[11px] sm:text-xs text-slate-400 font-medium">Select a patient to open the slide</span>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-100">
+                {cases.map((c, i) => (
+                  <button
+                    key={c.id}
+                    onClick={() => openCase(c.id)}
+                    className="group w-full flex items-center gap-3 sm:gap-4 px-4 sm:px-6 py-4 text-left transition-colors hover:bg-blue-50/50"
+                  >
+                    <div className={`w-11 h-11 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${AVATAR_TINTS[i % AVATAR_TINTS.length]}`}>
+                      {initialsOf(c.patient)}
+                    </div>
+                    <div className="min-w-0">
+                      <span className="font-semibold text-slate-800 group-hover:text-blue-700 transition-colors">{c.patient}</span>
+                      <p className="text-xs text-slate-500 font-medium mt-0.5 truncate">
+                        {c.site} &nbsp;·&nbsp; {c.age} yrs / {c.gender}
+                      </p>
+                    </div>
+                    {/* Pushed to the right edge so the wide row reads like a table */}
+                    <div className="ml-auto flex items-center gap-3 sm:gap-6 shrink-0">
+                      <span className="hidden sm:block text-xs font-medium text-slate-400 tabular-nums">{c.date}</span>
+                      <StatusPill status={c.status} />
+                      <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-blue-500 group-hover:translate-x-0.5 transition-all" />
+                    </div>
+                  </button>
+                ))}
+                {/* Loading indicator while submitted patients are being fetched */}
+                {loadingCases && (
+                  <div className="flex items-center justify-center gap-2 px-4 sm:px-6 py-4 text-sm text-slate-400">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading patients…
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        </main>
+
+        {/* Footer status bar — anchors the bottom of the page */}
+        <footer className="shrink-0 border-t border-slate-200/70 bg-white/70 backdrop-blur-sm px-4 sm:px-8 py-2.5">
+          <div className="max-w-6xl mx-auto w-full flex items-center justify-between text-[11px] font-medium text-slate-400">
+            <span>Telepathology Console · EPTB Hub</span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Live · synced
+            </span>
+          </div>
+        </footer>
       </div>
     );
   }
@@ -359,12 +408,12 @@ const TelepathologyDashboard = () => {
   if (page === 'details') {
     // Shared Tailwind class strings, kept in variables so the markup below
     // stays readable and the buttons/textareas look identical.
-    const taClass = "w-full h-28 p-3.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50 placeholder:text-slate-400";
+    const taClass = "w-full flex-1 min-h-[8rem] resize-none p-3.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50 placeholder:text-slate-400";
     const btnSecondary = "inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-700 bg-slate-100 ring-1 ring-slate-200 hover:bg-slate-200 active:scale-95 transition-all";
     const btnPrimary = "inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm active:scale-95 transition-all";
 
     return (
-      <div className="h-[100dvh] bg-slate-100 text-slate-900 overflow-y-auto">
+      <div className="h-[100dvh] bg-slate-100 clinical-bg text-slate-900 overflow-y-auto flex flex-col">
         <div className="sticky top-0 bg-white/95 backdrop-blur border-b border-slate-200/80 px-4 sm:px-8 py-3.5 shadow-sm flex items-center gap-3 z-10">
           <button
             onClick={() => setPage('slide')}
@@ -383,17 +432,19 @@ const TelepathologyDashboard = () => {
           <div className="ml-auto shrink-0"><StatusPill status={currentCase.status} /></div>
         </div>
 
-        <div className="max-w-3xl mx-auto w-full px-4 sm:px-8 py-6 space-y-5 pb-12">
+        <div className="max-w-5xl mx-auto my-auto w-full px-4 sm:px-8 py-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* 1. NIKSAY Patient Information — read-only facts shown as a 2-col grid */}
           <SectionCard icon={ClipboardList} title="1. NIKSAY Patient Information">
-            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-slate-100 rounded-xl overflow-hidden ring-1 ring-slate-200/70">
+            <dl className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-slate-100 rounded-xl overflow-hidden ring-1 ring-slate-200/70 flex-1 auto-rows-fr">
               {[
+                ['Patient Name', currentCase.patient],
+                ['Age / Gender', `${currentCase.age} yrs · ${currentCase.gender}`],
                 ['Registration ID', `NK-2026-${currentCase.id}001`],
-                ['Status', currentCase.status],
                 ['Specimen Site', currentCase.site],
+                ['Status', currentCase.status],
                 ['Collected', currentCase.date],
               ].map(([k, v]) => (
-                <div key={k} className="bg-slate-50/80 px-4 py-3">
+                <div key={k} className="bg-slate-50/80 px-4 py-3 flex flex-col justify-center">
                   <dt className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{k}</dt>
                   <dd className={`text-sm font-semibold mt-0.5 ${k === 'Status' ? 'text-emerald-600' : 'text-slate-800'}`}>{v}</dd>
                 </div>
@@ -464,6 +515,17 @@ const TelepathologyDashboard = () => {
             </button>
           </SectionCard>
         </div>
+
+        {/* Footer status bar — anchored to the bottom (mt-auto) so a short report
+            still fills the screen instead of leaving a large empty gap. */}
+        <footer className="shrink-0 border-t border-slate-200/70 bg-white/70 backdrop-blur-sm px-4 sm:px-8 py-2.5">
+          <div className="max-w-5xl mx-auto w-full flex items-center justify-between text-[11px] font-medium text-slate-400">
+            <span>Telepathology Console · EPTB Hub</span>
+            <span className="flex items-center gap-1.5">
+              <ShieldCheck className="w-3 h-3" /> Patient record · confidential
+            </span>
+          </div>
+        </footer>
 
         {/* Shared viewer modal — annotated image, saved notes, or a message */}
         {modal && (

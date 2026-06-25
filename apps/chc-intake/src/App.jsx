@@ -91,9 +91,12 @@ function App() {
   // --- What gets drawn on screen ---
   // (The className="..." text is styling — it sets colours, spacing and layout.)
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900">
+    <div className="min-h-screen bg-slate-100 clinical-bg text-slate-900 flex flex-col">
       <Header />
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+      {/* `flex-1 ... justify-center` centres the form vertically in the leftover
+          space, so the page reads as balanced instead of top-heavy with a big
+          empty gap underneath on large screens. */}
+      <main className="flex-1 flex flex-col justify-center w-full max-w-7xl mx-auto px-4 sm:px-8 py-6 sm:py-8">
         {/* Page heading */}
         <div className="mb-5">
           <h2 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">New Patient Intake</h2>
@@ -130,6 +133,17 @@ function App() {
           </div>
         </div>
       </main>
+
+      {/* Footer status bar — anchors the bottom of the page. */}
+      <footer className="shrink-0 border-t border-slate-200/70 bg-white/70 backdrop-blur-sm px-4 sm:px-8 py-2.5">
+        <div className="max-w-7xl mx-auto w-full flex items-center justify-between text-[11px] font-medium text-slate-400">
+          <span>Devipur CHC · Patient Intake Portal</span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            Connected to EPTB Hub
+          </span>
+        </div>
+      </footer>
     </div>
   );
 }

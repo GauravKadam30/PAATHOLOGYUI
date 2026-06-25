@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2 } from 'lucide-react'; // icons
 
 /*
@@ -15,6 +15,20 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
   // A "ref" is a handle to a hidden element on the page. We use it to click the
   // (invisible) file picker from our own nicer-looking upload box below.
   const inputRef = useRef(null);
+
+  // True only while a file is being dragged over the box, so we can light it up
+  // (blue border) to show "yes, you can drop here".
+  const [dragActive, setDragActive] = useState(false);
+
+  // Runs when the user releases a dragged file over the box. We stop the browser
+  // from just opening the image in a new tab (its default), then hand the dropped
+  // file to App exactly like the file picker does.
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer.files?.[0];   // the first file that was dropped
+    if (file) onFile(file);
+  };
 
   return (
     <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6 h-full flex flex-col">
@@ -40,31 +54,48 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
         onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }}
       />
 
-      {/* Our nice-looking upload box. Clicking it triggers the hidden picker above. */}
+      {/* Our nice-looking upload box. Clicking it triggers the hidden picker
+          above; dragging a file over it and letting go also works.
+          - onDragOver/onDragEnter must call preventDefault, otherwise the
+            browser refuses to let you drop here at all.
+          - The children are `pointer-events-none` so dragging across the icon or
+            text doesn't make the highlight flicker on and off. */}
       <button
         type="button"
         onClick={() => inputRef.current?.click()}
-        className="w-full rounded-xl border-2 border-dashed border-slate-200 hover:border-blue-400 hover:bg-blue-50/40 transition-colors px-6 py-8 text-center flex flex-col items-center gap-3"
+        onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
+        onDragEnter={(e) => { e.preventDefault(); setDragActive(true); }}
+        onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
+        onDrop={handleDrop}
+        className={`w-full rounded-xl border-2 border-dashed transition-colors px-6 py-8 text-center flex flex-col items-center gap-3 ${
+          dragActive
+            ? 'border-blue-500 bg-blue-50'                       // highlighted while dragging over
+            : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/40'
+        }`}
       >
-        <div className="w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
+        <div className="pointer-events-none w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
           <UploadCloud className="w-6 h-6 text-blue-600" />
         </div>
-        <div>
-          {/* Wording changes once an image is already chosen */}
+        <div className="pointer-events-none">
+          {/* Wording changes while dragging, and once an image is already chosen */}
           <p className="text-sm font-semibold text-slate-700">
-            {image ? 'Choose a different image' : 'Click to upload or drag & drop'}
+            {dragActive
+              ? 'Drop the image here'
+              : image ? 'Choose a different image' : 'Click to upload or drag & drop'}
           </p>
           <p className="text-xs text-slate-400 mt-0.5">PNG or JPG, up to 10 MB</p>
         </div>
       </button>
 
-      {/* Preview area — shows the chosen image, or a placeholder if none yet. */}
-      <div className="mt-5">
+      {/* Preview area — shows the chosen image, or a placeholder if none yet.
+          `flex-1` lets it grow and fill the card's spare height on big screens,
+          so the card doesn't leave an empty gap below the preview. */}
+      <div className="mt-5 flex-1 flex flex-col min-h-0">
         <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Image Preview</p>
         {image ? (
-          <img src={image} alt="Slide preview" className="w-full h-44 object-contain rounded-xl bg-slate-50 ring-1 ring-slate-200" />
+          <img src={image} alt="Slide preview" className="w-full flex-1 min-h-[11rem] object-contain rounded-xl bg-slate-50 ring-1 ring-slate-200" />
         ) : (
-          <div className="w-full h-44 rounded-xl bg-slate-50 ring-1 ring-slate-200 flex flex-col items-center justify-center gap-1.5 text-slate-400">
+          <div className="w-full flex-1 min-h-[11rem] rounded-xl bg-slate-50 ring-1 ring-slate-200 flex flex-col items-center justify-center gap-1.5 text-slate-400">
             <ImageIcon className="w-6 h-6" />
             <span className="text-xs font-medium">No image selected</span>
           </div>

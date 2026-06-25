@@ -9,7 +9,7 @@ export default function Header() {
   return (
     // "sticky top-0" keeps this bar pinned to the top of the screen while you scroll.
     <header className="sticky top-0 z-10 bg-white border-b border-slate-200/80 shadow-sm">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center gap-3">
+      <div className="max-w-7xl mx-auto px-4 sm:px-8 h-16 flex items-center gap-3">
         {/* Blue rounded square holding a building icon — the clinic logo */}
         <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm shrink-0">
           <Building2 className="w-5 h-5 text-white" />
