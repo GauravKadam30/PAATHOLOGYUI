@@ -220,16 +220,29 @@ const TelepathologyDashboard = () => {
     setIsDrawing(true);
   };
 
-  const saveAndClose = async () => {
-    // save() builds a brand-new full-resolution annotated image; we keep it as
-    // a separate artifact and push it to the shared backend. The live slide is
-    // never altered.
+  // Persist the current annotations as the full-resolution annotated image and
+  // push to the backend. Shared by the instant Save and the save-on-close flow.
+  const persistAnnotations = async () => {
     const png = await viewerApiRef.current?.save();
     if (png) {
       const next = { ...annotatedImages, [id]: png };
       setAnnotatedImages(next);
       apiPut('pv_annotatedImages', next);
     }
+    return !!png;
+  };
+
+  // Instant Save — saves the work so far but STAYS in annotation mode so the
+  // user can keep drawing. Gives a brief "Saved" confirmation on the button.
+  const saveAnnotationsNow = async () => {
+    if (await persistAnnotations()) flashSaved('annotation');
+  };
+
+  const saveAndClose = async () => {
+    // save() builds a brand-new full-resolution annotated image; we keep it as
+    // a separate artifact and push it to the shared backend. The live slide is
+    // never altered.
+    await persistAnnotations();
     setShowSaveModal(false);
     setIsDrawing(false);
   };
@@ -660,13 +673,26 @@ const TelepathologyDashboard = () => {
             })}
           </div>
 
-          {/* Colour defaults to black, so the only thing left to pick is a tool. */}
-          {!annotationTool && (
-            <span className="flex items-center gap-1.5 text-[11px] text-amber-300 font-semibold shrink-0 ml-auto bg-amber-400/10 px-3 py-1.5 rounded-full ring-1 ring-amber-400/20">
-              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-              Select a tool to start
-            </span>
-          )}
+          {/* Right side: the "pick a tool" hint (until one is chosen) and an
+              instant Save button that saves the work so far WITHOUT leaving
+              annotation mode — so you can keep drawing. */}
+          <div className="ml-auto flex items-center gap-2 shrink-0">
+            {!annotationTool && (
+              <span className="flex items-center gap-1.5 text-[11px] text-amber-300 font-semibold bg-amber-400/10 px-3 py-1.5 rounded-full ring-1 ring-amber-400/20">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                Select a tool to start
+              </span>
+            )}
+            <button
+              onClick={saveAnnotationsNow}
+              title="Save annotations now and keep editing"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide ring-1 bg-emerald-600 text-white ring-emerald-500 hover:bg-emerald-500 shadow-md shadow-emerald-900/40 transition-all"
+            >
+              {savedFlash === 'annotation'
+                ? <><Check className="w-3.5 h-3.5" /> Saved</>
+                : <><Save className="w-3.5 h-3.5" /> Save</>}
+            </button>
+          </div>
         </div>
       )}
 

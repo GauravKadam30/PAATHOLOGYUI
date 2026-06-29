@@ -1,5 +1,10 @@
-import { useRef, useState } from 'react';
-import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2 } from 'lucide-react'; // icons
+import { useRef, useState, useEffect } from 'react';
+import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2, CheckCircle2 } from 'lucide-react'; // icons
+
+// Turn a byte count into a short, friendly size like "820 KB" or "2.4 MB".
+const formatSize = (bytes) => bytes < 1024 * 1024
+  ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+  : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 
 /*
  * FileUpload.jsx — the card on the right: pick a slide image, see a preview,
@@ -20,14 +25,27 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
   // (blue border) to show "yes, you can drop here".
   const [dragActive, setDragActive] = useState(false);
 
+  // Remembers the chosen file's name and size, so the box can show WHICH file is
+  // selected (not just the preview below). Cleared automatically if the image is
+  // removed (e.g. after the form is submitted) — see the effect below.
+  const [fileInfo, setFileInfo] = useState(null);
+  useEffect(() => { if (!image) setFileInfo(null); }, [image]);
+
+  // One place that handles a chosen file, whether it came from the picker or a
+  // drag-and-drop: remember its name/size, then hand it to App like before.
+  const pick = (file) => {
+    if (!file) return;
+    setFileInfo({ name: file.name, size: file.size });
+    onFile(file);
+  };
+
   // Runs when the user releases a dragged file over the box. We stop the browser
   // from just opening the image in a new tab (its default), then hand the dropped
   // file to App exactly like the file picker does.
   const handleDrop = (e) => {
     e.preventDefault();
     setDragActive(false);
-    const file = e.dataTransfer.files?.[0];   // the first file that was dropped
-    if (file) onFile(file);
+    pick(e.dataTransfer.files?.[0]);   // the first file that was dropped
   };
 
   return (
@@ -51,7 +69,7 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
         type="file"
         accept="image/*"        // only allow image files
         className="hidden"
-        onChange={(e) => { onFile(e.target.files?.[0]); e.target.value = ''; }}
+        onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ''; }}
       />
 
       {/* Our nice-looking upload box. Clicking it triggers the hidden picker
@@ -67,24 +85,43 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
         onDragEnter={(e) => { e.preventDefault(); setDragActive(true); }}
         onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
         onDrop={handleDrop}
-        className={`w-full rounded-xl border-2 border-dashed transition-colors px-6 py-8 text-center flex flex-col items-center gap-3 ${
+        className={`w-full rounded-xl border-2 border-dashed transition-colors px-6 py-7 text-center flex flex-col items-center gap-3 ${
           dragActive
-            ? 'border-blue-500 bg-blue-50'                       // highlighted while dragging over
-            : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/40'
+            ? 'border-blue-500 bg-blue-50'                          // highlighted while dragging over
+            : image
+              ? 'border-emerald-300 bg-emerald-50/40 hover:border-emerald-400'  // a file is selected
+              : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/40'
         }`}
       >
-        <div className="pointer-events-none w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
-          <UploadCloud className="w-6 h-6 text-blue-600" />
-        </div>
-        <div className="pointer-events-none">
-          {/* Wording changes while dragging, and once an image is already chosen */}
-          <p className="text-sm font-semibold text-slate-700">
-            {dragActive
-              ? 'Drop the image here'
-              : image ? 'Choose a different image' : 'Click to upload or drag & drop'}
-          </p>
-          <p className="text-xs text-slate-400 mt-0.5">PNG or JPG, up to 10 MB</p>
-        </div>
+        {image ? (
+          /* A file is selected: show WHICH file, and that clicking/dropping replaces it. */
+          <>
+            <div className="pointer-events-none w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center">
+              <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+            </div>
+            <div className="pointer-events-none min-w-0 w-full px-2">
+              <p className="text-sm font-semibold text-slate-700 truncate">
+                {dragActive ? 'Drop to replace' : (fileInfo?.name || 'Image selected')}
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {fileInfo ? `${formatSize(fileInfo.size)} · ` : ''}Click or drop to replace
+              </p>
+            </div>
+          </>
+        ) : (
+          /* No file yet: show the upload prompt. */
+          <>
+            <div className="pointer-events-none w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
+              <UploadCloud className="w-6 h-6 text-blue-600" />
+            </div>
+            <div className="pointer-events-none">
+              <p className="text-sm font-semibold text-slate-700">
+                {dragActive ? 'Drop the image here' : 'Click to upload or drag & drop'}
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5">PNG or JPG, up to 10 MB</p>
+            </div>
+          </>
+        )}
       </button>
 
       {/* Preview area — shows the chosen image, or a placeholder if none yet.
