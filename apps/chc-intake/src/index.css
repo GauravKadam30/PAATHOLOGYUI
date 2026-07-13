@@ -4,9 +4,10 @@
  * The one line below pulls in "Tailwind", a styling toolkit. It's what makes all
  * the short className="..." labels in the .jsx files actually produce colours,
  * spacing, rounded corners, etc. The rest of this file sets a few page-wide
- * defaults (font, text-selection colour, scrollbars).
+ * defaults (fonts, text-selection colour, scrollbars, the shared background).
  */
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 /* ===== Default font and crisper text everywhere ===== */
 html {
@@ -16,26 +17,26 @@ html {
   text-rendering: optimizeLegibility;
 }
 
+/* Monospaced clinical figures (patient IDs, ages, dates) — a small touch that
+   makes numeric fields read as precise, lab-style data rather than prose. */
+.mono { font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace; }
+
 /* Colour shown when you highlight text with the mouse */
 ::selection {
-  background: #bfdbfe; /* light blue */
-  color: #1e3a8a;      /* dark blue */
+  background: #c7d2fe; /* indigo-200 */
+  color: #312e81;      /* indigo-900 */
 }
 
-/* A calm but clearly visible, professional page backdrop instead of a flat
-   colour: a three-colour gradient "mesh" (blue top-left, teal top-right, indigo
-   along the bottom) over a soft dot grid, on a cool base colour. The white form
-   cards sit brightly on top, so the colour stays tasteful rather than loud. */
+/* ===== "Pro Workstation" backdrop =====
+   A cool neutral grey with a soft dot grid, paired with the dark navy header
+   (see .rail-dark) and an indigo accent — a calmer, more clinical look than a
+   bright colour wash. */
 .clinical-bg {
-  background-color: #e9edf3;          /* cool light base so white cards pop */
-  background-image:
-    radial-gradient(1200px circle at 6% -10%, rgba(37, 99, 235, 0.20), transparent 46%),
-    radial-gradient(1100px circle at 100% -4%, rgba(13, 148, 136, 0.17), transparent 46%),
-    radial-gradient(1000px circle at 50% 118%, rgba(79, 70, 229, 0.14), transparent 52%),
-    radial-gradient(rgba(30, 41, 59, 0.07) 1.3px, transparent 1.6px);
-  background-size: 100% 100%, 100% 100%, 100% 100%, 24px 24px;
-  background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+  background-color: #f5f6f9;
+  background-image: radial-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1.4px);
+  background-size: 22px 22px;
 }
+.rail-dark { background-color: #0b1120; }
 
 /* Thin, subtle scrollbars instead of the chunky default ones */
 * { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }
@@ -45,4 +46,8 @@ html {
 
 /* Small tidy-ups for form controls and buttons */
 input, select, textarea { outline: none; }
+textarea:focus, input:focus, select:focus {
+  border-color: #4f46e5;                       /* indigo-600 */
+  box-shadow: 0 0 0 3px rgb(79 70 229 / 0.12);
+}
 button { -webkit-tap-highlight-color: transparent; } /* no grey flash when tapped on mobile */

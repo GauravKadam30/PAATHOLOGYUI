@@ -8,7 +8,7 @@ const formatSize = (bytes) => bytes < 1024 * 1024
 
 /*
  * FileUpload.jsx — the card on the right: pick a slide image, see a preview,
- * and press Submit.
+ * and press Submit ("Pro Workstation" styling: indigo drag-drop box).
  *
  * Like the form, this card doesn't keep its own data; App.jsx does. It receives:
  *   image    — the chosen picture (as text), or null if none yet
@@ -22,7 +22,7 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
   const inputRef = useRef(null);
 
   // True only while a file is being dragged over the box, so we can light it up
-  // (blue border) to show "yes, you can drop here".
+  // (indigo border) to show "yes, you can drop here".
   const [dragActive, setDragActive] = useState(false);
 
   // Remembers the chosen file's name and size, so the box can show WHICH file is
@@ -49,14 +49,14 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
   };
 
   return (
-    <section className="bg-white rounded-2xl ring-1 ring-slate-200/70 shadow-sm p-5 sm:p-6 h-full flex flex-col">
+    <section className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 sm:p-6 h-full flex flex-col">
       {/* Card title with an icon badge */}
       <div className="flex items-center gap-2.5 mb-5">
-        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
-          <Microscope className="w-4 h-4 text-blue-600" />
+        <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center shrink-0">
+          <Microscope className="w-4 h-4 text-indigo-600" />
         </div>
         <div>
-          <h2 className="text-sm font-bold text-slate-800">FNAC Slide Image<span className="text-red-500 ml-0.5">*</span></h2>
+          <h2 className="text-sm font-bold text-slate-900">FNAC Slide Image<span className="text-red-500 ml-0.5">*</span></h2>
           <p className="text-xs text-slate-400">Attach the cytology slide photo</p>
         </div>
       </div>
@@ -85,40 +85,40 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
         onDragEnter={(e) => { e.preventDefault(); setDragActive(true); }}
         onDragLeave={(e) => { e.preventDefault(); setDragActive(false); }}
         onDrop={handleDrop}
-        className={`w-full rounded-xl border-2 border-dashed transition-colors px-6 py-7 text-center flex flex-col items-center gap-3 ${
+        className={`w-full rounded-xl border-[1.5px] border-dashed transition-colors px-6 py-7 text-center flex flex-col items-center gap-3 ${
           dragActive
-            ? 'border-blue-500 bg-blue-50'                          // highlighted while dragging over
+            ? 'border-indigo-500 bg-indigo-50'                                    // highlighted while dragging over
             : image
-              ? 'border-emerald-300 bg-emerald-50/40 hover:border-emerald-400'  // a file is selected
-              : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/40'
+              ? 'border-indigo-300 bg-indigo-50/50 hover:border-indigo-400'       // a file is selected
+              : 'border-indigo-200 bg-indigo-50/40 hover:border-indigo-400'
         }`}
       >
         {image ? (
           /* A file is selected: show WHICH file, and that clicking/dropping replaces it. */
           <>
-            <div className="pointer-events-none w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center">
-              <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+            <div className="pointer-events-none w-12 h-12 rounded-full bg-indigo-600 flex items-center justify-center">
+              <CheckCircle2 className="w-6 h-6 text-white" />
             </div>
             <div className="pointer-events-none min-w-0 w-full px-2">
-              <p className="text-sm font-semibold text-slate-700 truncate">
+              <p className="text-sm font-semibold text-indigo-800 truncate">
                 {dragActive ? 'Drop to replace' : (fileInfo?.name || 'Image selected')}
               </p>
-              <p className="text-xs text-slate-400 mt-0.5">
-                {fileInfo ? `${formatSize(fileInfo.size)} · ` : ''}Click or drop to replace
+              <p className="mono text-xs text-indigo-400 mt-0.5">
+                {fileInfo ? `${formatSize(fileInfo.size)} · ` : ''}click or drop to replace
               </p>
             </div>
           </>
         ) : (
           /* No file yet: show the upload prompt. */
           <>
-            <div className="pointer-events-none w-12 h-12 rounded-full bg-blue-50 flex items-center justify-center">
-              <UploadCloud className="w-6 h-6 text-blue-600" />
+            <div className="pointer-events-none w-12 h-12 rounded-full bg-indigo-600 flex items-center justify-center">
+              <UploadCloud className="w-6 h-6 text-white" />
             </div>
             <div className="pointer-events-none">
-              <p className="text-sm font-semibold text-slate-700">
+              <p className="text-sm font-semibold text-indigo-700">
                 {dragActive ? 'Drop the image here' : 'Click to upload or drag & drop'}
               </p>
-              <p className="text-xs text-slate-400 mt-0.5">PNG or JPG, up to 10 MB</p>
+              <p className="mono text-xs text-indigo-400 mt-0.5">png / jpg · max 10mb</p>
             </div>
           </>
         )}
@@ -128,11 +128,11 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
           `flex-1` lets it grow and fill the card's spare height on big screens,
           so the card doesn't leave an empty gap below the preview. */}
       <div className="mt-5 flex-1 flex flex-col min-h-0">
-        <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Image Preview</p>
+        <p className="mono text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-2">image preview</p>
         {image ? (
-          <img src={image} alt="Slide preview" className="w-full flex-1 min-h-[11rem] object-contain rounded-xl bg-slate-50 ring-1 ring-slate-200" />
+          <img src={image} alt="Slide preview" className="w-full flex-1 min-h-[11rem] object-contain rounded-xl bg-neutral-50 border border-gray-200" />
         ) : (
-          <div className="w-full flex-1 min-h-[11rem] rounded-xl bg-slate-50 ring-1 ring-slate-200 flex flex-col items-center justify-center gap-1.5 text-slate-400">
+          <div className="w-full flex-1 min-h-[11rem] rounded-xl bg-neutral-50 border border-gray-200 flex flex-col items-center justify-center gap-1.5 text-slate-400">
             <ImageIcon className="w-6 h-6" />
             <span className="text-xs font-medium">No image selected</span>
           </div>
@@ -143,7 +143,7 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
       <button
         onClick={onSubmit}
         disabled={busy}
-        className="mt-6 w-full inline-flex items-center justify-center gap-2 py-3 bg-blue-600 text-white rounded-xl font-semibold text-sm tracking-wide hover:bg-blue-700 active:scale-[0.99] shadow-md shadow-blue-600/20 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+        className="mt-6 w-full inline-flex items-center justify-center gap-2 py-3 bg-indigo-600 text-white rounded-xl font-semibold text-sm tracking-wide hover:bg-indigo-700 active:scale-[0.99] shadow-md shadow-indigo-600/25 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
       >
         {busy
           ? <><Loader2 className="w-4 h-4 animate-spin" /> Submitting…</>

@@ -129,7 +129,7 @@ function App() {
   // While we check the saved token, show a brief loader…
   if (authChecking) {
     return (
-      <div className="min-h-screen bg-slate-100 clinical-bg flex items-center justify-center text-slate-400">
+      <div className="min-h-screen clinical-bg flex items-center justify-center text-slate-400">
         <span className="flex items-center gap-2 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</span>
       </div>
     );
@@ -138,23 +138,29 @@ function App() {
   if (!user) return <Login onAuth={setUser} />;
 
   // (The className="..." text is styling — it sets colours, spacing and layout.)
+  // `h-[100dvh] ... overflow-hidden` pins the page to exactly the browser
+  // window's height (header/footer fixed, only `main` scrolls if it ever needs
+  // to), and `main` has no max-width — the three cards below stretch to fill
+  // the FULL window width at any size, not just a capped, centred block.
   return (
-    <div className="min-h-screen bg-slate-100 clinical-bg text-slate-900 flex flex-col">
+    <div className="h-[100dvh] clinical-bg text-slate-900 flex flex-col overflow-hidden">
       <Header user={user} onLogout={handleLogout} onUpdated={setUser} />
-      {/* `flex-1 ... justify-center` centres the form vertically in the leftover
-          space, so the page reads as balanced instead of top-heavy with a big
-          empty gap underneath on large screens. */}
-      <main className="flex-1 flex flex-col justify-center w-full max-w-7xl mx-auto px-4 sm:px-8 py-6 sm:py-8">
+      <main className="flex-1 min-h-0 overflow-y-auto flex flex-col w-full px-4 sm:px-8 py-5 sm:py-6">
         {/* Page heading */}
-        <div className="mb-5">
-          <h2 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">New Patient Intake</h2>
-          <p className="text-sm text-slate-500">Register a patient and attach their FNAC slide for review.</p>
+        <div className="mb-5 flex items-end justify-between gap-4 shrink-0">
+          <div>
+            <h2 className="text-lg sm:text-xl font-extrabold tracking-tight text-slate-900">New Patient Intake</h2>
+            <p className="text-sm text-slate-500">Register a patient and attach their FNAC slide for review.</p>
+          </div>
+          <div className="mono hidden sm:flex items-center gap-2 text-[11px] font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-md px-3 py-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> connected · eptb hub
+          </div>
         </div>
 
         {/* The little message bar — only shown when `toast` holds something.
             Green for success, red for an error. The ✕ button dismisses it. */}
         {toast && (
-          <div className={`mb-5 flex items-start gap-2.5 rounded-xl px-4 py-3 text-sm ring-1 ${
+          <div className={`mb-5 flex items-start gap-2.5 rounded-xl px-4 py-3 text-sm ring-1 shrink-0 ${
             toast.type === 'success'
               ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
               : 'bg-red-50 text-red-800 ring-red-200'
@@ -169,12 +175,12 @@ function App() {
           </div>
         )}
 
-        {/* Two columns on wide screens (form + upload); they stack on phones.
-            `form`, `setField`, `image`, etc. are "props" — values handed down to
-            each part so they can show data and report changes back here. */}
-        {/* Three side-by-side columns on wide screens (they stack on smaller ones):
-            Patient Information | Consultant | FNAC Slide Image. */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Three side-by-side columns spanning the FULL window width on large
+            screens (they stack on phones): Patient Information | Consultant |
+            FNAC Slide Image. `flex-1` + removing `items-start` (grid's default
+            is "stretch") makes all three cards the same height, filling
+            whatever vertical space is left in the window too. */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 flex-1 min-h-0 pb-1">
           <div className="lg:col-span-5">
             <PatientForm form={form} setField={setField} />
           </div>
@@ -188,9 +194,9 @@ function App() {
       </main>
 
       {/* Footer status bar — anchors the bottom of the page. */}
-      <footer className="shrink-0 border-t border-slate-200/70 bg-white/70 backdrop-blur-sm px-4 sm:px-8 py-2.5">
-        <div className="max-w-7xl mx-auto w-full flex items-center justify-between text-[11px] font-medium text-slate-400">
-          <span>{user.chcName} · Patient Intake Portal</span>
+      <footer className="shrink-0 border-t border-gray-200 bg-white px-4 sm:px-8 py-2.5">
+        <div className="w-full flex items-center justify-between text-[11px] font-medium text-slate-400">
+          <span className="mono">{user.chcName} · patient intake portal</span>
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
             Connected to EPTB Hub

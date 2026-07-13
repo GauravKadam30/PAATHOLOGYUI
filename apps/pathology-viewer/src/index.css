@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 /* ===== Global typography & rendering ===== */
 html {
@@ -8,26 +9,26 @@ html {
   text-rendering: optimizeLegibility;
 }
 
+/* Monospaced clinical figures (IDs, ages, dates) — gives them a "read precisely,
+   don't skim" feel that's standard in lab/clinical software. */
+.mono { font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace; }
+
 ::selection {
-  background: #bfdbfe; /* blue-200 */
-  color: #1e3a8a;      /* blue-900 */
+  background: #c7d2fe; /* indigo-200 */
+  color: #312e81;      /* indigo-900 */
 }
 
-/* ===== Clinical backdrop =====
-   A calm but clearly visible, professional surface: a three-colour gradient
-   "mesh" (blue top-left, teal top-right, indigo along the bottom) over a soft
-   dot grid, on a cool base colour. The white cards sit brightly on top of it.
-   The colour-mix keeps the washes tasteful rather than loud. */
+/* ===== Clinical backdrop ("Pro Workstation" theme) =====
+   A cool, neutral grey surface with a soft dot grid — quieter than a colour
+   wash, so it reads as a professional workstation rather than a marketing page.
+   Pairs with the dark navy rail/header (see .rail-dark) and indigo accent. */
 .clinical-bg {
-  background-color: #e9edf3;          /* cool light base so white cards pop */
-  background-image:
-    radial-gradient(1200px circle at 6% -10%, rgba(37, 99, 235, 0.20), transparent 46%),
-    radial-gradient(1100px circle at 100% -4%, rgba(13, 148, 136, 0.17), transparent 46%),
-    radial-gradient(1000px circle at 50% 118%, rgba(79, 70, 229, 0.14), transparent 52%),
-    radial-gradient(rgba(30, 41, 59, 0.07) 1.3px, transparent 1.6px);
-  background-size: 100% 100%, 100% 100%, 100% 100%, 24px 24px;
-  background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+  background-color: #f5f6f9;
+  background-image: radial-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1.4px);
+  background-size: 22px 22px;
 }
+/* The dark navy navigation rail / header background. */
+.rail-dark { background-color: #0b1120; }
 
 /* ===== Slim, unobtrusive scrollbars ===== */
 * {
@@ -54,8 +55,8 @@ input {
 }
 textarea:focus,
 input:focus {
-  border-color: #3b82f6;                      /* blue-500 */
-  box-shadow: 0 0 0 3px rgb(59 130 246 / 0.15);
+  border-color: #4f46e5;                      /* indigo-600 */
+  box-shadow: 0 0 0 3px rgb(79 70 229 / 0.12);
 }
 textarea {
   resize: vertical;
