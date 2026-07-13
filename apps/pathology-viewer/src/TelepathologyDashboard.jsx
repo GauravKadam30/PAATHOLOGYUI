@@ -451,10 +451,11 @@ const TelepathologyDashboard = () => {
     });
 
     // Shared grid template for the table-style worklist: Patient | Specimen |
-    // Age/Sex | Received | Status | chevron. On phones the middle three
-    // columns are hidden (see `hidden sm:flex` below), so the row naturally
-    // collapses to Patient | Status | chevron without a separate mobile layout.
-    const gridCols = 'grid-cols-[1fr_auto_20px] sm:grid-cols-[2.4fr_1.3fr_1fr_1fr_1fr_36px]';
+    // Age/Sex | Lab Attendant | CHC | Received | Status | chevron. On phones
+    // the middle columns are hidden (see `hidden sm:block` below), so the row
+    // naturally collapses to Patient | Status | chevron without a separate
+    // mobile layout.
+    const gridCols = 'grid-cols-[1fr_auto_20px] sm:grid-cols-[2fr_1fr_1fr_1fr_1fr_1fr_1fr_36px]';
 
     return (
       <div className="h-[100dvh] rail-dark text-slate-900 overflow-hidden flex">
@@ -531,6 +532,8 @@ const TelepathologyDashboard = () => {
                 <div>Patient</div>
                 <div>Specimen</div>
                 <div>Age / Sex</div>
+                <div>Lab Attendant</div>
+                <div>CHC</div>
                 <div>Received</div>
                 <div>Status</div>
                 <div />
@@ -554,18 +557,17 @@ const TelepathologyDashboard = () => {
                         </div>
                         <div className="min-w-0">
                           <div className="font-semibold text-slate-900 group-hover:text-indigo-700 transition-colors truncate">{c.patient}</div>
-                          {/* Who submitted it, and from which CHC — shown only
-                              for cases sent in from the intake app (the demo
-                              patients don't have these, so they show nothing). */}
-                          {(c.chcName || c.attendant) && (
-                            <div className="mono text-[11px] text-slate-400 mt-0.5 truncate">
-                              {[c.chcName, c.attendant].filter(Boolean).join(' · ')}
-                            </div>
-                          )}
+                          {/* NIKSHAY-style registration id, under the patient name. */}
+                          <div className="mono text-[11px] text-slate-400 mt-0.5 truncate">NK-2026-{c.id}001</div>
                         </div>
                       </div>
                       <div className="hidden sm:block text-[13px] text-slate-600 truncate">{c.site}</div>
                       <div className="hidden sm:block mono text-[12.5px] text-slate-500">{c.age} · {c.gender}</div>
+                      {/* Who submitted the case, and from which CHC — their own
+                          columns now, instead of a subtext line. Demo patients
+                          have neither, so these show a muted dash. */}
+                      <div className="hidden sm:block text-[13px] text-slate-600 truncate">{c.attendant || '—'}</div>
+                      <div className="hidden sm:block text-[13px] text-slate-600 truncate">{c.chcName || '—'}</div>
                       <div className="hidden sm:block mono text-[12.5px] text-slate-500 tabular-nums">{c.date}</div>
                       <div><StatusPill status={c.status} /></div>
                       <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-indigo-500 group-hover:translate-x-0.5 transition-all justify-self-end" />
