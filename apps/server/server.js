@@ -1,87 +1,117 @@
 /**
- * Telepathology Console — shared backend.
+ * Telepathology Console — backend API.
  * ---------------------------------------------------------------------------
- * A tiny key/value API so saved notes and annotated images are stored centrally
- * and therefore SHARED across machines (instead of each browser keeping its own
- * copy). Pure JavaScript — no native modules — so it runs anywhere Node runs.
+ * A small Express server, now backed by a real SQLite database (see db.js)
+ * instead of a single JSON file. It handles:
+ *   • sign-up / login for CHC lab attendants (see auth.js),
+ *   • the patient "cases" submitted from the intake app,
+ *   • a key/value store the Pathology Viewer uses for saved notes & annotations.
  *
- * Storage is a single JSON file (data.json) next to this script. That's plenty
- * for a prototype; swap in a real database later without changing the API.
- *
- * API:
- *   GET  /api/store/:key   -> returns the stored JSON value for :key (or {})
- *   PUT  /api/store/:key   -> saves the JSON request body under :key
- *
- * The frontend uses keys: pv_clinicalSaved, pv_pathologistSaved,
- * pv_medicineSaved, pv_annotatedImages — each a { [patientId]: value } map.
+ * Data layer (db.js) and security (auth.js) are kept in separate files so this
+ * file stays a clean list of "which URL does what".
  */
 import express from 'express';
 import cors from 'cors';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import * as db from './db.js';
+import { hashPassword, verifyPassword, signToken, authRequired, publicUser } from './auth.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_FILE = path.join(__dirname, 'data.json');
-const PORT = process.env.PORT || 3001;
-
-// --- JSON file storage helpers ---
-const readAll = () => {
-  try { return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); }
-  catch { return {}; }            // file missing or empty → start fresh
-};
-const writeAll = (obj) => fs.writeFileSync(DATA_FILE, JSON.stringify(obj, null, 2));
+db.migrateLegacyJson();   // bring across any existing data.json on first run
 
 const app = express();
-app.use(cors());                                  // allow the browser app (any origin) to call this
-app.use(express.json({ limit: '50mb' }));         // annotated images are large data-URLs
+app.use(cors());                            // allow the browser apps to call this
+app.use(express.json({ limit: '50mb' }));   // slide images arrive as large data-URLs
 
-// Read one key
-app.get('/api/store/:key', (req, res) => {
-  const db = readAll();
-  res.json(db[req.params.key] ?? {});
+// ===== Authentication =======================================================
+// Sign up: creates a lab-attendant account (name + CHC + email + password).
+app.post('/api/auth/signup', (req, res) => {
+  const { email, password, fullName, chcName } = req.body || {};
+  if (!email || !password || !fullName || !chcName)
+    return res.status(400).json({ error: 'Name, CHC, email and password are all required.' });
+  if (String(password).length < 6)
+    return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+  if (db.getUserByEmail(email))
+    return res.status(409).json({ error: 'An account with this email already exists.' });
+
+  const user = db.createUser({
+    email: String(email).trim(),
+    passwordHash: hashPassword(password),
+    fullName: String(fullName).trim(),
+    chcName: String(chcName).trim(),
+  });
+  res.json({ token: signToken(user), user: publicUser(user) });
 });
 
-// Save one key (whole value replaced)
-app.put('/api/store/:key', (req, res) => {
-  const db = readAll();
-  db[req.params.key] = req.body;
-  writeAll(db);
+// Log in: check the password, hand back a fresh token.
+app.post('/api/auth/login', (req, res) => {
+  const { email, password } = req.body || {};
+  const user = db.getUserByEmail(String(email || '').trim());
+  if (!user || !verifyPassword(password || '', user.password_hash))
+    return res.status(401).json({ error: 'Wrong email or password.' });
+  res.json({ token: signToken(user), user: publicUser(user) });
+});
+
+// Who am I? Lets the app restore the session on reload from its saved token.
+app.get('/api/auth/me', authRequired, (req, res) => res.json({ user: publicUser(req.user) }));
+
+// Edit profile: update the signed-in attendant's name and CHC.
+app.patch('/api/auth/profile', authRequired, (req, res) => {
+  const { fullName, chcName } = req.body || {};
+  if (!fullName || !String(fullName).trim() || !chcName || !String(chcName).trim())
+    return res.status(400).json({ error: 'Name and CHC are required.' });
+  const user = db.updateProfile(req.user.id, {
+    fullName: String(fullName).trim(), chcName: String(chcName).trim(),
+  });
+  res.json({ user: publicUser(user) });
+});
+
+// Forgot password: with no email server available, we verify identity by
+// matching the email + attendant name + CHC on the account, then set a new
+// password. (A production system would instead email a one-time reset link.)
+app.post('/api/auth/reset-password', (req, res) => {
+  const { email, fullName, chcName, newPassword } = req.body || {};
+  if (!email || !fullName || !chcName || !newPassword)
+    return res.status(400).json({ error: 'All fields are required.' });
+  if (String(newPassword).length < 6)
+    return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+  const user = db.getUserByEmail(String(email).trim());
+  const norm = (s) => String(s).trim().toLowerCase();
+  const matches = user
+    && norm(user.full_name) === norm(fullName)
+    && norm(user.chc_name) === norm(chcName);
+  if (!matches)
+    return res.status(400).json({ error: 'Those details do not match any account.' });
+  db.updatePassword(user.id, hashPassword(newPassword));
   res.json({ ok: true });
 });
 
-// --- Intake cases ---
-// Patients submitted from the CHC intake app, shown in the viewer's queue.
-// Each case mirrors the viewer's format: { id, patient, age, gender, site,
-// status, date, image } where `image` is a data-URL of the uploaded slide.
-// List cases WITHOUT the (large) image data so the viewer's queue loads fast;
-// `hasImage` tells the client an image can be fetched per-case when opened.
-app.get('/api/cases', (_req, res) => {
-  const db = readAll();
-  const list = (db.__cases || []).map(({ image, ...meta }) => ({ ...meta, hasImage: !!image }));
-  res.json(list);
-});
-// Full case (including the image) — fetched when a patient's slide is opened.
+// ===== Key/value store (Pathology Viewer notes & annotated images) ==========
+app.get('/api/store/:key', (req, res) => res.json(db.getKV(req.params.key)));
+app.put('/api/store/:key', (req, res) => { db.setKV(req.params.key, req.body); res.json({ ok: true }); });
+
+// ===== Cases ================================================================
+// List (metadata only — no images — so the queue loads fast).
+app.get('/api/cases', (_req, res) => res.json(db.listCases()));
+
+// One full case, including its slide image (fetched when a slide is opened).
 app.get('/api/cases/:id', (req, res) => {
-  const db = readAll();
-  const found = (db.__cases || []).find(c => String(c.id) === String(req.params.id));
-  if (!found) return res.status(404).json({ error: 'not found' });
-  res.json(found);
+  const c = db.getCase(req.params.id);
+  if (!c) return res.status(404).json({ error: 'not found' });
+  res.json(c);
 });
-app.post('/api/cases', (req, res) => {
-  const db = readAll();
-  const list = db.__cases || [];
-  // Assign a stable id (100+) so it never clashes with the viewer's demo cases.
-  const newCase = { ...req.body, id: 100 + list.length };
-  list.push(newCase);
-  db.__cases = list;
-  writeAll(db);
-  res.json(newCase);
+
+// Submit a new case — SIGN-IN REQUIRED. The attendant name and CHC are taken
+// from the logged-in account (not trusted from the request), so every case is
+// reliably stamped with who submitted it and from where.
+app.post('/api/cases', authRequired, (req, res) => {
+  const body = req.body || {};
+  if (!body.patient || !String(body.patient).trim())
+    return res.status(400).json({ error: 'Patient name is required.' });
+  const id = db.createCase(body, req.user);
+  res.json(db.getCaseMeta(id));
 });
 
 // Simple health/landing check
 app.get('/', (_req, res) => res.send('Telepathology Console API is running.'));
 
-app.listen(PORT, () => {
-  console.log(`Telepathology API listening on http://localhost:${PORT}`);
-});
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => console.log(`Telepathology API (SQLite) listening on http://localhost:${PORT}`));

@@ -18,6 +18,10 @@ package-lock.json
 
 # Backend data store (created at runtime) and local env files
 data.json
+data.json.migrated
+data.db
+data.db-wal
+data.db-shm
 .env
 
 # Editor directories and files

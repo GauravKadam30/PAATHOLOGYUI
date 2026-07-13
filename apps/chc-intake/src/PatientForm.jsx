@@ -16,12 +16,14 @@ const inputCls =
   "placeholder:text-slate-400 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition";
 const labelCls = "block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5";
 
-// A small reusable "label + box" wrapper. `span={2}` makes the field stretch
-// across both columns (used for the wide Consultant and Notes fields).
-function Field({ label, span = 1, children }) {
+// A small reusable "label + box" wrapper. `span={2}` stretches across both
+// columns; `required` shows a red asterisk on the label.
+function Field({ label, span = 1, required = false, children }) {
   return (
     <div className={span === 2 ? 'sm:col-span-2' : ''}>
-      <label className={labelCls}>{label}</label>
+      <label className={labelCls}>
+        {label}{required && <span className="text-red-500 ml-0.5">*</span>}
+      </label>
       {children}
     </div>
   );
@@ -48,11 +50,11 @@ export default function PatientForm({ form, setField }) {
             onChange=...      → on each keystroke, save the new text back to App
           (e.target.value is whatever the user just typed.) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <Field label="CHC Patient ID">
+        <Field label="CHC Patient ID" required>
           <input className={inputCls} placeholder="e.g. 123456789012"
             value={form.chcId} onChange={(e) => setField('chcId', e.target.value)} />
         </Field>
-        <Field label="Patient Name">
+        <Field label="Patient Name" required>
           <input className={inputCls} placeholder="Full name"
             value={form.name} onChange={(e) => setField('name', e.target.value)} />
         </Field>
@@ -61,7 +63,7 @@ export default function PatientForm({ form, setField }) {
           <input className={inputCls} placeholder="00-0000-0000-0000"
             value={form.abha} onChange={(e) => setField('abha', e.target.value)} />
         </Field>
-        <Field label="Age">
+        <Field label="Age" required>
           <input type="number" className={inputCls} placeholder="Years"
             value={form.age} onChange={(e) => setField('age', e.target.value)} />
         </Field>
@@ -70,7 +72,7 @@ export default function PatientForm({ form, setField }) {
           <input className={inputCls} placeholder="e.g. NK-000000"
             value={form.nikshay} onChange={(e) => setField('nikshay', e.target.value)} />
         </Field>
-        <Field label="Gender">
+        <Field label="Gender" required>
           {/* The values are "F"/"M"/"Other" to match how the Pathology Viewer
               shows gender for the other patients. */}
           <select className={`${inputCls} appearance-none bg-white`}
@@ -81,17 +83,8 @@ export default function PatientForm({ form, setField }) {
             <option value="Other">Other</option>
           </select>
         </Field>
-
-        {/* Full-width fields (span={2}) */}
-        <Field label="Consultant Name" span={2}>
-          <input className={inputCls} placeholder="Referring consultant"
-            value={form.consultant} onChange={(e) => setField('consultant', e.target.value)} />
-        </Field>
-
-        <Field label="OPD Prescription & Notes" span={2}>
-          <textarea className={`${inputCls} h-32 resize-none`} placeholder="Enter patient clinical notes…"
-            value={form.notes} onChange={(e) => setField('notes', e.target.value)} />
-        </Field>
+        {/* Consultant Name and OPD Prescription & Notes now live in their own
+            "Consultant" card (see ConsultantForm.jsx). */}
       </div>
     </section>
   );

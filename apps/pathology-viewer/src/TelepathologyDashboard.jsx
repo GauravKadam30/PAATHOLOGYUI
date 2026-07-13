@@ -382,6 +382,13 @@ const TelepathologyDashboard = () => {
                       <p className="text-xs text-slate-500 font-medium mt-0.5 truncate">
                         {c.site} &nbsp;·&nbsp; {c.age} yrs / {c.gender}
                       </p>
+                      {/* Who submitted it, from which CHC — shown for cases sent
+                          in from the intake app (demo patients don't have these). */}
+                      {(c.chcName || c.attendant) && (
+                        <p className="text-[11px] text-slate-400 font-medium mt-0.5 truncate">
+                          {[c.chcName, c.attendant].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
                     </div>
                     {/* Pushed to the right edge so the wide row reads like a table */}
                     <div className="ml-auto flex items-center gap-3 sm:gap-6 shrink-0">
@@ -602,7 +609,12 @@ const TelepathologyDashboard = () => {
           </button>
           <div className="min-w-0">
             <p className="text-sm font-semibold text-white truncate leading-tight">{currentCase.patient}</p>
-            <p className="text-[11px] text-slate-400 font-medium truncate">{currentCase.site} · WSI viewer</p>
+            <p className="text-[11px] text-slate-400 font-medium truncate">
+              {currentCase.site} · WSI viewer
+              {/* If this case came from a CHC intake, show the source CHC + attendant */}
+              {(currentCase.chcName || currentCase.attendant) &&
+                ` · ${[currentCase.chcName, currentCase.attendant].filter(Boolean).join(' · ')}`}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">

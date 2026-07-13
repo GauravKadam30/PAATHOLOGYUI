@@ -56,7 +56,7 @@ export default function FileUpload({ image, onFile, onSubmit, busy }) {
           <Microscope className="w-4 h-4 text-blue-600" />
         </div>
         <div>
-          <h2 className="text-sm font-bold text-slate-800">FNAC Slide Image</h2>
+          <h2 className="text-sm font-bold text-slate-800">FNAC Slide Image<span className="text-red-500 ml-0.5">*</span></h2>
           <p className="text-xs text-slate-400">Attach the cytology slide photo</p>
         </div>
       </div>

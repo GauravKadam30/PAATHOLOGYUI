@@ -8,12 +8,14 @@
  *   3. When "Submit" is pressed, it sends everything to the backend so the new
  *      patient appears in the Pathology Viewer.
  */
-import { useState } from 'react';                            // React's way to "remember" values
-import { CheckCircle2, AlertCircle, X } from 'lucide-react'; // small icons (tick, warning, close)
+import { useState, useEffect } from 'react';                 // React's way to "remember" values
+import { CheckCircle2, AlertCircle, X, Loader2 } from 'lucide-react'; // small icons
 import Header from './Header';                               // the top bar
-import PatientForm from './PatientForm';                     // the form on the left
+import PatientForm from './PatientForm';                     // the patient details card
+import ConsultantForm from './ConsultantForm';              // the consultant / OPD notes card
 import FileUpload from './FileUpload';                       // the upload box on the right
-import { addCase } from './api';                             // function that sends data to the backend
+import Login from './Login';                                 // the sign-in / sign-up screen
+import { addCase, getMe, getToken, logout } from './api';    // backend + auth helpers
 
 // The starting (blank) value for every form field.
 const EMPTY = { chcId: '', name: '', abha: '', age: '', nikshay: '', gender: '', consultant: '', notes: '' };
@@ -43,11 +45,28 @@ function fileToDataURL(file, maxDim = 2000, quality = 0.9) {
 }
 
 function App() {
+  // --- Sign-in state ---
+  const [user, setUser] = useState(null);           // the signed-in lab attendant, or null
+  const [authChecking, setAuthChecking] = useState(true); // restoring the session on first load?
+
+  // On first load, if we have a saved token, ask the server who we are so the
+  // user stays signed in across refreshes. If the token is bad/expired, sign out.
+  useEffect(() => {
+    if (!getToken()) { setAuthChecking(false); return; }
+    getMe()
+      .then(setUser)
+      .catch(() => logout())
+      .finally(() => setAuthChecking(false));
+  }, []);
+
   // --- "State": values the app remembers and re-draws the screen when they change ---
   const [form, setForm] = useState(EMPTY);     // all the typed-in form fields
   const [image, setImage] = useState(null);    // the chosen slide image (as text), or nothing yet
   const [busy, setBusy] = useState(false);     // true while a submit is being sent
   const [toast, setToast] = useState(null);    // the little success/error message, or none
+
+  // Sign out: forget the token and drop back to the login screen.
+  const handleLogout = () => { logout(); setUser(null); };
 
   // Update one form field (e.g. "name") without disturbing the others.
   const setField = (key, value) => setForm(f => ({ ...f, [key]: value }));
@@ -61,38 +80,67 @@ function App() {
 
   // Runs when "Submit Case to EPTB Hub" is pressed.
   const handleSubmit = async () => {
-    // Make sure the essentials are filled in first.
-    if (!form.name.trim() || !image) {
-      setToast({ type: 'error', text: 'Please enter the patient name and upload a slide image first.' });
+    // All of these are mandatory before a case can be submitted. We collect the
+    // list of anything missing and show it, so the user knows exactly what to fill.
+    const missing = [];
+    if (!form.chcId.trim()) missing.push('CHC Patient ID');
+    if (!form.name.trim()) missing.push('Patient Name');
+    if (!String(form.age).trim()) missing.push('Age');
+    if (!form.gender) missing.push('Gender');
+    if (!form.consultant.trim()) missing.push('Consultant Name');
+    if (!form.notes.trim()) missing.push('OPD Prescription & Notes');
+    if (!image) missing.push('FNAC Slide Image');
+    if (missing.length) {
+      setToast({ type: 'error', text: `Please fill in: ${missing.join(', ')}.` });
       return;
     }
+
     setBusy(true);                              // disable the button while sending
     try {
-      // Send the patient to the backend, shaped exactly how the Pathology Viewer expects.
+      // Send the patient to the backend (the consultant + notes are now included).
       await addCase({
         patient: form.name.trim(),
-        age: form.age || '—',
-        gender: form.gender || '—',
+        age: form.age,
+        gender: form.gender,
         site: 'Lymph Node',
         status: 'Pending',
         date: new Date().toISOString().slice(0, 10), // today's date, e.g. "2026-06-21"
+        chcId: form.chcId.trim(),
+        abha: form.abha.trim(),
+        nikshay: form.nikshay.trim(),
+        consultant: form.consultant.trim(),
+        notes: form.notes.trim(),
         image,
       });
       setForm(EMPTY);                           // clear the form, ready for the next patient
       setImage(null);
       setToast({ type: 'success', text: 'Case submitted — it now appears in the Pathology Viewer queue.' });
-    } catch {
-      setToast({ type: 'error', text: 'Submit failed. Make sure the backend (apps/server) is running.' });
+    } catch (err) {
+      // Show the server's message; if the session expired, drop back to login.
+      const msg = err?.message || 'Submit failed. Make sure the backend (apps/server) is running.';
+      setToast({ type: 'error', text: msg });
+      if (/sign in|session/i.test(msg)) handleLogout();
     } finally {
       setBusy(false);                           // re-enable the button, whether it worked or not
     }
   };
 
   // --- What gets drawn on screen ---
+  // While we check the saved token, show a brief loader…
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-slate-100 clinical-bg flex items-center justify-center text-slate-400">
+        <span className="flex items-center gap-2 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</span>
+      </div>
+    );
+  }
+  // …then, if nobody is signed in, show the login screen instead of the form.
+  if (!user) return <Login onAuth={setUser} />;
+
   // (The className="..." text is styling — it sets colours, spacing and layout.)
   return (
     <div className="min-h-screen bg-slate-100 clinical-bg text-slate-900 flex flex-col">
-      <Header />
+      <Header user={user} onLogout={handleLogout} onUpdated={setUser} />
       {/* `flex-1 ... justify-center` centres the form vertically in the leftover
           space, so the page reads as balanced instead of top-heavy with a big
           empty gap underneath on large screens. */}
@@ -124,11 +172,16 @@ function App() {
         {/* Two columns on wide screens (form + upload); they stack on phones.
             `form`, `setField`, `image`, etc. are "props" — values handed down to
             each part so they can show data and report changes back here. */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-7">
+        {/* Three side-by-side columns on wide screens (they stack on smaller ones):
+            Patient Information | Consultant | FNAC Slide Image. */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-5">
             <PatientForm form={form} setField={setField} />
           </div>
-          <div className="lg:col-span-5">
+          <div className="lg:col-span-4">
+            <ConsultantForm form={form} setField={setField} />
+          </div>
+          <div className="lg:col-span-3">
             <FileUpload image={image} onFile={handleFile} onSubmit={handleSubmit} busy={busy} />
           </div>
         </div>
@@ -137,7 +190,7 @@ function App() {
       {/* Footer status bar — anchors the bottom of the page. */}
       <footer className="shrink-0 border-t border-slate-200/70 bg-white/70 backdrop-blur-sm px-4 sm:px-8 py-2.5">
         <div className="max-w-7xl mx-auto w-full flex items-center justify-between text-[11px] font-medium text-slate-400">
-          <span>Devipur CHC · Patient Intake Portal</span>
+          <span>{user.chcName} · Patient Intake Portal</span>
           <span className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
             Connected to EPTB Hub
