@@ -15,7 +15,7 @@ import PatientForm from './PatientForm';                     // the patient deta
 import ConsultantForm from './ConsultantForm';              // the consultant / OPD notes card
 import FileUpload from './FileUpload';                       // the upload box on the right
 import Login from './Login';                                 // the sign-in / sign-up screen
-import { addCase, getMe, getToken, logout } from './api';    // backend + auth helpers
+import { addCase, uploadSlide, isSlideFile, getMe, getToken, logout } from './api'; // backend + auth helpers
 
 // The starting (blank) value for every form field.
 const EMPTY = { chcId: '', name: '', abha: '', age: '', nikshay: '', gender: '', consultant: '', notes: '' };
@@ -64,6 +64,12 @@ function App() {
   const [image, setImage] = useState(null);    // the chosen slide image (as text), or nothing yet
   const [busy, setBusy] = useState(false);     // true while a submit is being sent
   const [toast, setToast] = useState(null);    // the little success/error message, or none
+  // A scanner slide (.tiff/.svs/...) is far too big to shrink in the browser
+  // or send inline, so it is kept as the raw File here and uploaded separately
+  // after the case is created. `uploadPct` drives the progress bar during that
+  // upload — it can take minutes for a gigabyte-scale file.
+  const [slideFile, setSlideFile] = useState(null);
+  const [uploadPct, setUploadPct] = useState(null);
 
   // Sign out: forget the token and drop back to the login screen.
   const handleLogout = () => { logout(); setUser(null); };
@@ -71,9 +77,20 @@ function App() {
   // Update one form field (e.g. "name") without disturbing the others.
   const setField = (key, value) => setForm(f => ({ ...f, [key]: value }));
 
-  // Runs when the user picks an image: convert it and remember it (or show an error).
+  // Runs when the user picks a file. Two very different paths:
+  //   • A scanner slide (.tiff/.svs/...) — browsers can't decode these in an
+  //     <img>, and at gigapixel size they'd blow past canvas limits anyway, so
+  //     we keep the raw File untouched and upload it separately on submit.
+  //   • An ordinary photo (.png/.jpg) — unchanged from before: shrink it in
+  //     the browser and send it inline with the case.
   const handleFile = async (file) => {
     if (!file) return;
+    if (isSlideFile(file.name)) {
+      setSlideFile(file);
+      setImage(null);          // no browser-side preview is possible for these
+      return;
+    }
+    setSlideFile(null);
     try { setImage(await fileToDataURL(file)); }
     catch { setToast({ type: 'error', text: 'Could not read that image — please try another file.' }); }
   };
@@ -89,7 +106,7 @@ function App() {
     if (!form.gender) missing.push('Gender');
     if (!form.consultant.trim()) missing.push('Consultant Name');
     if (!form.notes.trim()) missing.push('OPD Prescription & Notes');
-    if (!image) missing.push('FNAC Slide Image');
+    if (!image && !slideFile) missing.push('FNAC Slide Image');
     if (missing.length) {
       setToast({ type: 'error', text: `Please fill in: ${missing.join(', ')}.` });
       return;
@@ -97,8 +114,10 @@ function App() {
 
     setBusy(true);                              // disable the button while sending
     try {
-      // Send the patient to the backend (the consultant + notes are now included).
-      await addCase({
+      // Step 1 — create the case. For a scanner slide `image` is null here;
+      // the file follows in step 2, because it streams to disk on the server
+      // and needs the case id to know where to put it.
+      const created = await addCase({
         patient: form.name.trim(),
         age: form.age,
         gender: form.gender,
@@ -112,9 +131,22 @@ function App() {
         notes: form.notes.trim(),
         image,
       });
+
+      // Step 2 — upload the slide file itself, if this was a scanner slide.
+      if (slideFile) {
+        setUploadPct(0);
+        await uploadSlide(created.id, slideFile, setUploadPct);
+      }
+
       setForm(EMPTY);                           // clear the form, ready for the next patient
       setImage(null);
-      setToast({ type: 'success', text: 'Case submitted — it now appears in the Pathology Viewer queue.' });
+      setSlideFile(null);
+      setToast({
+        type: 'success',
+        text: slideFile
+          ? 'Slide uploaded — it now appears in the Pathology Viewer queue.'
+          : 'Case submitted — it now appears in the Pathology Viewer queue.',
+      });
     } catch (err) {
       // Show the server's message; if the session expired, drop back to login.
       const msg = err?.message || 'Submit failed. Make sure the backend (apps/server) is running.';
@@ -122,6 +154,7 @@ function App() {
       if (/sign in|session/i.test(msg)) handleLogout();
     } finally {
       setBusy(false);                           // re-enable the button, whether it worked or not
+      setUploadPct(null);
     }
   };
 
@@ -188,7 +221,8 @@ function App() {
             <ConsultantForm form={form} setField={setField} />
           </div>
           <div className="lg:col-span-3">
-            <FileUpload image={image} onFile={handleFile} onSubmit={handleSubmit} busy={busy} />
+            <FileUpload image={image} slideFile={slideFile} uploadPct={uploadPct}
+              onFile={handleFile} onSubmit={handleSubmit} busy={busy} />
           </div>
         </div>
       </main>

@@ -11,9 +11,21 @@
 import crypto from 'crypto';
 import { getUserById } from './db.js';
 
-// The secret used to sign tokens. In real deployment set JWT_SECRET in the
-// environment; this fallback is only for local development.
+// The secret used to sign tokens. A hardcoded fallback is fine while
+// developing locally, but silently falling back in production would mean
+// anyone who has read the source can forge tokens — so outside development
+// the server refuses to start without JWT_SECRET rather than running in a
+// state that merely LOOKS secure.
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+if (IS_PRODUCTION && !process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET must be set when NODE_ENV=production.');
+  console.error('Generate one with:  node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"');
+  process.exit(1);
+}
 const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me-in-production';
+if (!process.env.JWT_SECRET) {
+  console.warn('[auth] JWT_SECRET not set — using the built-in development secret. Do not use this in production.');
+}
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // tokens last 7 days
 
 // --- Password hashing --------------------------------------------------------
@@ -34,7 +46,16 @@ export function verifyPassword(password, stored) {
 // --- Signed tokens -----------------------------------------------------------
 const b64u = (s) => Buffer.from(s).toString('base64url');
 export function signToken(user) {
-  const payload = { sub: user.id, role: user.role, exp: Date.now() + TOKEN_TTL_MS };
+  // `ver` carries the account's token_version. authRequired compares it with
+  // the current value in the database, so bumping that column invalidates
+  // every token already issued — the only way to actually revoke a stolen
+  // token before its 7-day expiry.
+  const payload = {
+    sub: user.id,
+    role: user.role,
+    ver: user.token_version ?? 0,
+    exp: Date.now() + TOKEN_TTL_MS,
+  };
   const body = b64u(JSON.stringify(payload));
   const sig = crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
   return `${body}.${sig}`;
@@ -60,8 +81,28 @@ export function authRequired(req, res, next) {
   if (!payload) return res.status(401).json({ error: 'Please sign in.' });
   const user = getUserById(payload.sub);
   if (!user) return res.status(401).json({ error: 'Your session is no longer valid.' });
+  // Revocation check: a token minted before the account's version was bumped
+  // (password change, "sign out everywhere") is refused even though its
+  // signature is valid and it hasn't expired yet.
+  if ((payload.ver ?? 0) !== (user.token_version ?? 0)) {
+    return res.status(401).json({ error: 'Your session has ended. Please sign in again.' });
+  }
   req.user = user;
   next();
+}
+
+// --- One-time password reset codes ------------------------------------------
+// Six digits, generated with a cryptographic RNG (not Math.random) and stored
+// only as a hash, so the database never holds a usable code.
+export function generateResetCode() {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
+export const hashResetCode = (code) =>
+  crypto.createHash('sha256').update(`${SECRET}:${code}`).digest('hex');
+export function verifyResetCode(code, storedHash) {
+  const a = Buffer.from(hashResetCode(String(code)));
+  const b = Buffer.from(String(storedHash));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 // Shape a user record for sending to the browser (drops the password hash).

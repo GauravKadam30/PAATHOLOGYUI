@@ -1,33 +1,50 @@
 /**
  * WsiViewer — the whole-slide-image (WSI) viewer with annotation tools.
  * ---------------------------------------------------------------------------
- * It stacks THREE layers inside one box:
- *   1. OpenSeadragon canvas  — the deep-zoom pathology slide (bottom).
- *   2. Fabric.js canvas      — the user's drawings (middle); only shown while
- *                              annotating, so the original slide stays clean.
- *   3. A transparent overlay — captures the mouse only while drawing (top).
+ * THREE LAYERS stacked inside one box:
+ *   1. OpenSeadragon canvas  — the pathology slide itself (bottom).
+ *   2. Fabric.js canvas      — the pathologist's marks (middle). Shown
+ *                              whenever `showAnnotations` is on, not only
+ *                              while drawing, so previous findings are visible
+ *                              the moment a slide is opened.
+ *   3. A transparent overlay — captures the mouse, only while drawing (top).
  *
- * Key idea: annotations are stored in IMAGE pixel coordinates (not screen
- * coordinates). On every pan/zoom we re-project them onto the screen via
- * `syncViewport`, so a circle drawn on a cell stays glued to that cell when
- * you zoom in or out.
+ * TWO KINDS OF SLIDE, one component:
+ *   • A scanner file (.tiff/.svs/…) → `caseData.dziUrl`. Far too large to load
+ *     as one image (the development sample is 135,438 × 57,665 px, ~7.8
+ *     gigapixels), so OpenSeadragon streams it as small tiles, fetching only
+ *     what's on screen at the current zoom.
+ *   • An ordinary photo (.png/.jpg) → `caseData.image`, loaded as one file,
+ *     exactly as before whole-slide support existed.
  *
- * The parent (TelepathologyDashboard) talks to this component through a ref:
- * it can `save()` (get a composited PNG of slide+drawings), `discard()`
- * (roll back), and `exportPNG()` (download). See `useImperativeHandle` below.
+ * WHY MARKS STAY GLUED TO THE TISSUE: every shape is stored in IMAGE pixel
+ * coordinates, never screen coordinates. `syncViewport` re-projects them on
+ * each pan/zoom frame by matching fabric's transform to OpenSeadragon's, so a
+ * circle drawn around a cell stays on that cell at any magnification.
+ *
+ * THE PARENT'S HANDLE (see `useImperativeHandle` below):
+ *   save()      → the marks as VECTOR JSON, a few KB, for the parent to store.
+ *                 (It used to return a flattened PNG — ~16 MB per case, and
+ *                 uneditable once saved. See annotations.js.)
+ *   discard()   → roll back to the state this drawing session began in.
+ *   exportPNG() → a flattened picture, built ON DEMAND for downloads only.
+ *
+ * SCALE BAR & MAGNIFICATION are shown only when the slide carries the
+ * scanner's microns-per-pixel calibration. Without it, no scale is displayed
+ * rather than a guessed one — an invented measurement on a diagnostic image is
+ * worse than none.
  */
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from 'react';
 import OpenSeadragon from 'openseadragon';                 // deep-zoom slide viewer
 import * as FabricModule from 'fabric';                    // 2D canvas drawing library
 import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X, Loader2 } from 'lucide-react'; // control icons
+// URL helpers and the on-demand flattener live in annotations.js, which owns
+// everything about how marks are stored and rendered.
+import { resolveImageUrl, resolveDziUrl, renderAnnotatedImage } from './annotations';
+import { fetchSlideInfo } from './api';                    // scanner calibration (microns per pixel)
 
 // fabric v7 has no named `fabric` export, so we use the whole module namespace.
 const fabric = FabricModule;
-
-// Demo slides are filenames served from /public; slides submitted via CHC intake
-// are full data-URLs. Use the value directly if it's already a URL, else prefix "/".
-const resolveImageUrl = (image) =>
-  /^(data:|https?:|blob:)/.test(image || '') ? image : `/${image}`;
 
 // A custom mouse cursor shaped like an eraser, built from an inline SVG encoded
 // as a data-URI (no separate image file needed). The trailing "1 15" is the
@@ -37,9 +54,63 @@ const ERASER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="white" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>'
 )}") 1 15, cell`;
 
+// --- Scale bar / magnification maths ----------------------------------------
+// Everything below depends on the scanner's microns-per-pixel (MPP) figure.
+// If a slide doesn't carry one, no scale bar and no magnification are shown —
+// a made-up scale on a diagnostic image is worse than none at all.
+
+// Objective magnifications offered as quick presets, matching a microscope's
+// turret. The conventional mapping between an objective and the scan
+// resolution it corresponds to is 10/M microns per pixel — a 40x objective is
+// ~0.25 µm/px, 20x is ~0.5, 10x is ~1.0, 4x is ~2.5.
+const MAGNIFICATION_PRESETS = [4, 10, 20, 40];
+const MICRONS_PER_PIXEL_AT_1X = 10;
+
+// Lengths a scale bar is allowed to show. Bars snap to one of these so the
+// label is always a round number a pathologist can reason about, rather than
+// something like "137 µm".
+const NICE_SCALE_STEPS = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000, 10000];
+const TARGET_SCALE_BAR_PX = 130;   // preferred on-screen length before snapping
+
+// How many microns one SCREEN pixel currently covers.
+// `zoom` is OpenSeadragon's viewport zoom, where 1 means the image width
+// exactly fills the container.
+const micronsPerScreenPixel = (mpp, imageWidth, containerWidth, zoom) =>
+  (mpp * imageWidth) / (zoom * containerWidth);
+
+// The objective magnification the current view corresponds to.
+const magnificationFor = (mpp, imageWidth, containerWidth, zoom) =>
+  MICRONS_PER_PIXEL_AT_1X / micronsPerScreenPixel(mpp, imageWidth, containerWidth, zoom);
+
+// The viewport zoom needed to display at a given objective magnification —
+// the inverse of magnificationFor(), used by the preset buttons.
+const zoomForMagnification = (mpp, imageWidth, containerWidth, magnification) =>
+  (mpp * imageWidth * magnification) / (MICRONS_PER_PIXEL_AT_1X * containerWidth);
+
+// Choose a round micron length whose on-screen width lands near the target,
+// and report both the label and the exact pixel width to draw.
+function computeScaleBar(micronsPerPx) {
+  const rawMicrons = TARGET_SCALE_BAR_PX * micronsPerPx;
+  const microns = NICE_SCALE_STEPS.find((s) => s >= rawMicrons) ?? NICE_SCALE_STEPS[NICE_SCALE_STEPS.length - 1];
+  return {
+    microns,
+    widthPx: microns / micronsPerPx,
+    label: microns >= 1000 ? `${microns / 1000} mm` : `${microns} µm`,
+  };
+}
+
 // `forwardRef` lets the parent hold a handle to this component so it can call
 // save()/discard()/exportPNG() (wired up via useImperativeHandle further down).
-const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annotationTool }, ref) => {
+const WsiViewer = forwardRef(({
+  caseData, annotationMode, annotationColor, annotationTool,
+  // Previously saved marks for this case (fabric JSON in image coordinates).
+  // They're loaded onto the canvas when the slide opens, so a pathologist
+  // sees earlier annotations straight away and can edit them rather than
+  // starting from scratch each session.
+  savedAnnotations,
+  // Lets the viewer show the clean, unmarked slide without discarding anything.
+  showAnnotations = true,
+}, ref) => {
   // --- Refs hold long-lived objects/DOM nodes that must survive re-renders ---
   const viewerRef = useRef(null);       // the OpenSeadragon viewer instance
   const containerRef = useRef(null);    // the <div> OpenSeadragon renders into
@@ -52,6 +123,11 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
   const [isReady, setIsReady] = useState(false);          // gate: only build the viewer after first render
   const [hoverInImage, setHoverInImage] = useState(false); // is the cursor currently over the slide image?
   const [isFullPage, setIsFullPage] = useState(false);     // is the viewer in our custom full-screen mode?
+  // Scanner calibration for this slide ({ width, height, mppX, ... }), or null
+  // for an ordinary photo case / a slide with no calibration recorded.
+  const [slideInfo, setSlideInfo] = useState(null);
+  // Recomputed as the user zooms: { magnification, scaleBar } or null.
+  const [scaleState, setScaleState] = useState(null);
 
   // Drawing is allowed once the user has picked a tool, plus a color for the
   // drawing tools — the eraser doesn't need one.
@@ -61,6 +137,77 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
   // Flip `isReady` true once, right after the first render, so the effects below
   // run only when the container <div>s already exist in the DOM.
   useEffect(() => { setIsReady(true); }, []);
+
+  // Fetch the scanner's calibration for whole-slide cases. Ordinary photo
+  // cases have no known physical scale, so they get no scale bar.
+  useEffect(() => {
+    setSlideInfo(null);
+    setScaleState(null);
+    if (!caseData?.dziUrl || !caseData?.id) return;
+    let cancelled = false;
+    fetchSlideInfo(caseData.id).then((info) => {
+      if (!cancelled && info?.mppX) setSlideInfo(info);
+    });
+    return () => { cancelled = true; };
+  }, [caseData]);
+
+  // Keep the scale bar and magnification readout in step with the viewport.
+  // OpenSeadragon fires 'zoom' on every animation frame of a zoom, so the
+  // state is only updated when the DISPLAYED values actually change —
+  // otherwise this would re-render the component dozens of times a second.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || !slideInfo?.mppX) return;
+
+    const recompute = () => {
+      const containerWidth = viewer.container?.clientWidth;
+      if (!containerWidth) return;
+      const zoom = viewer.viewport.getZoom(true);
+      if (!zoom || !isFinite(zoom)) return;
+
+      const perPx = micronsPerScreenPixel(slideInfo.mppX, slideInfo.width, containerWidth, zoom);
+      if (!isFinite(perPx) || perPx <= 0) return;
+      const magnification = magnificationFor(slideInfo.mppX, slideInfo.width, containerWidth, zoom);
+      const scaleBar = computeScaleBar(perPx);
+
+      setScaleState((prev) => {
+        const mag = magnification >= 10 ? Math.round(magnification) : Math.round(magnification * 10) / 10;
+        if (prev && prev.magnification === mag && prev.scaleBar.microns === scaleBar.microns
+            && Math.abs(prev.scaleBar.widthPx - scaleBar.widthPx) < 0.5) {
+          return prev;                     // nothing visibly changed
+        }
+        return { magnification: mag, scaleBar };
+      });
+    };
+
+    recompute();
+    // 'zoom' fires when a zoom is REQUESTED — before the spring animation has
+    // moved anything — so listening to it alone leaves the readout showing the
+    // previous position. 'animation' fires each frame while the view is
+    // settling and 'animation-finish' guarantees a final, exact sample.
+    const events = ['zoom', 'animation', 'animation-finish', 'open', 'resize'];
+    events.forEach((e) => viewer.addHandler(e, recompute));
+    return () => events.forEach((e) => viewer.removeHandler(e, recompute));
+  }, [slideInfo, isReady, caseData, isFullPage]);
+
+  // Jump straight to a standard objective magnification, like turning a
+  // microscope's turret. Clamped to what the viewer allows.
+  const goToMagnification = useCallback((magnification) => {
+    const viewer = viewerRef.current;
+    if (!viewer || !slideInfo?.mppX) return;
+    const containerWidth = viewer.container?.clientWidth;
+    if (!containerWidth) return;
+    const target = zoomForMagnification(slideInfo.mppX, slideInfo.width, containerWidth, magnification);
+    viewer.viewport.zoomTo(Math.min(target, viewer.viewport.getMaxZoom()));
+    viewer.viewport.applyConstraints();
+  }, [slideInfo]);
+
+  // The magnification the scan itself actually resolves — one screen pixel per
+  // image pixel. Presets beyond this still work but are digital enlargement,
+  // so they're marked in the UI rather than pretending to be real optics.
+  const nativeMagnification = slideInfo?.mppX
+    ? MICRONS_PER_PIXEL_AT_1X / slideInfo.mppX
+    : null;
 
   // Keeps the fabric canvas aligned with the slide: annotations live in image
   // pixel coordinates, and this maps them to the screen on every pan/zoom so
@@ -83,7 +230,10 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
 
   // --- Build / rebuild the OpenSeadragon viewer when the patient changes ---
   useEffect(() => {
-    if (!isReady || !caseData?.image || !containerRef.current) return;
+    // Two kinds of case can be shown, and either is enough to open the viewer:
+    //   • a scanner whole-slide image → caseData.dziUrl, streamed as tiles
+    //   • an ordinary photo of a slide → caseData.image, loaded as one file
+    if (!isReady || (!caseData?.image && !caseData?.dziUrl) || !containerRef.current) return;
 
     // Tear down any previous viewer before creating a new one (patient switch).
     if (viewerRef.current) {
@@ -93,9 +243,23 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
 
     const viewer = OpenSeadragon({
       element: containerRef.current,
-      tileSources: { type: 'image', url: resolveImageUrl(caseData.image) }, // the JPG in /public
+      // A .dzi descriptor is passed as a plain URL string — OpenSeadragon
+      // recognises Deep Zoom and fetches only the tiles the current view
+      // needs, which is the only way a gigapixel slide can be displayed at
+      // all. Everything else still loads as a single flat image, exactly as
+      // before, so existing PNG/JPG cases are unaffected.
+      tileSources: caseData.dziUrl
+        ? resolveDziUrl(caseData.dziUrl)
+        : { type: 'image', url: resolveImageUrl(caseData.image) },
       animationTime: 0.5,   // seconds for zoom/pan spring animation
       blendTime: 0.1,       // seconds for image tiles to fade in
+      // How far past native resolution the user may zoom. OpenSeadragon's
+      // default (1.1) stops almost exactly at one image pixel per screen
+      // pixel, which feels like the viewer has "hit a wall" mid-examination.
+      // 2 allows a further 2x digital magnification — note this only enlarges
+      // the pixels that are already there, it does NOT reveal more detail;
+      // the real limit is whatever the scanner captured.
+      maxZoomPixelRatio: 2,
       // The default sprite-image buttons are replaced by our own styled
       // controls rendered in JSX below.
       showNavigationControl: false,
@@ -149,11 +313,21 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
     resize();
     window.addEventListener('resize', resize);
 
-    // Note: we intentionally do NOT restore previous annotations here — each
-    // annotation session starts on the clean original slide. The previously
-    // saved annotated image is kept separately by the parent.
+    // Restore this case's saved marks. They're stored as vector shapes in
+    // image coordinates, so they land back exactly on the tissue they were
+    // drawn on — and stay editable, unlike the flattened image we used to
+    // keep. `cancelled` guards against a patient switch landing mid-load.
+    let cancelled = false;
+    if (savedAnnotations) {
+      Promise.resolve(canvas.loadFromJSON(savedAnnotations)).then(() => {
+        if (cancelled || fabricRef.current !== canvas) return;
+        syncViewport();          // loadFromJSON resets the transform
+        canvas.renderAll();
+      }).catch(() => { /* corrupt saved data — start clean rather than break */ });
+    }
 
     return () => {
+      cancelled = true;
       window.removeEventListener('resize', resize);
       fabricRef.current = null;
       // dispose() is async in fabric v6+; remove only this instance's holder
@@ -168,14 +342,26 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
     // While drawing, disable OSD's own mouse pan/zoom so dragging draws instead.
     viewerRef.current.setMouseNavEnabled(!annotationMode);
     viewerRef.current.innerTracker.setTracking(!annotationMode);
-    // Each new session starts on a fresh, clean slide: wipe any leftover
-    // shapes from a previous session, then snapshot that blank canvas as the
-    // baseline so "Don't save" rolls back to nothing.
+    // Snapshot the canvas as it stands when the session begins — including
+    // any previously saved marks. "Don't save" rolls back to THIS, i.e. the
+    // last saved state, rather than wiping the case's whole history as it did
+    // when annotations were flattened into an image.
     if (annotationMode && fabricRef.current) {
-      fabricRef.current.clear();
       baselineRef.current = fabricRef.current.toJSON();
     }
   }, [annotationMode]);
+
+  // Existing marks are selectable/movable only while annotating; the rest of
+  // the time they are inert decoration over the slide.
+  useEffect(() => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+    for (const o of canvas.getObjects()) {
+      o.selectable = annotationMode;
+      o.evented = annotationMode;
+    }
+    canvas.renderAll();
+  }, [annotationMode, savedAnnotations]);
 
   // --- Custom full-screen ("full page") mode ---
   // OSD's built-in setFullPage moves only its own div onto the bare (white) page
@@ -224,53 +410,29 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
     return () => clearTimeout(t);
   }, [isFullPage, syncViewport]);
 
-  // Builds a BRAND-NEW, full-resolution image: the ORIGINAL slide at its native
-  // pixel size with the annotations drawn on top — NOT a screenshot of whatever
-  // is on screen at the current zoom. Annotations live in image coordinates, so
-  // they map 1:1 onto the full image. Async because it loads the original at
-  // native resolution and clones the marks onto an off-screen canvas.
+  // Flatten the current marks onto the slide and return a PNG data-URL.
+  // Used ONLY for downloading/previewing a report image — nothing this large
+  // is stored; the saved annotation is the vector JSON from save() below.
+  // The actual compositing lives in annotations.js so the Reports page can do
+  // the same thing without the viewer being mounted.
   const compositeAnnotatedImage = useCallback(async () => {
     const canvas = fabricRef.current;
-    if (!canvas || !caseData?.image) return null;
-
-    // Load the original slide at native resolution. It's served from /public
-    // (same-origin), so the export canvas won't be tainted and toDataURL works.
-    const img = await new Promise((resolve) => {
-      const im = new Image();
-      im.onload = () => resolve(im);
-      im.onerror = () => resolve(null);
-      im.src = resolveImageUrl(caseData.image);
-    });
-    if (!img) return null;
-    const W = img.naturalWidth, H = img.naturalHeight;
-
-    // Render the marks at native scale: a fresh StaticCanvas has the default
-    // identity transform, so each mark sits at its image-pixel position.
-    const layer = new fabric.StaticCanvas(null, { width: W, height: H, enableRetinaScaling: false });
-    for (const o of canvas.getObjects()) {
-      layer.add(await o.clone());
-    }
-    layer.renderAll();
-
-    // Composite onto a new canvas: original slide first, annotations on top.
-    const out = document.createElement('canvas');
-    out.width = W;
-    out.height = H;
-    const ctx = out.getContext('2d');
-    ctx.drawImage(img, 0, 0, W, H);
-    ctx.drawImage(layer.lowerCanvasEl, 0, 0, W, H);
-    layer.dispose();
-
-    return out.toDataURL('image/png');
+    if (!canvas) return null;
+    const size = imgSizeRef.current;
+    return renderAnnotatedImage(caseData, canvas.toJSON(), size?.x, size?.y);
   }, [caseData]);
 
   // Expose a small API to the parent via its ref.
   useImperativeHandle(ref, () => ({
-    // Returns the new full-resolution annotated image (a fresh artifact). The
-    // live slide is never altered, and the canvas is wiped at the start of the
-    // next session for a clean original.
-    save: () => compositeAnnotatedImage(),
-    // "Don't save": reload the blank baseline snapshot, discarding this session.
+    // Returns the marks as VECTOR JSON (a few KB) for the parent to persist —
+    // not a flattened image. The live slide is never altered.
+    save: () => {
+      const canvas = fabricRef.current;
+      return canvas ? canvas.toJSON() : null;
+    },
+    // "Don't save": reload the snapshot taken when this session began, which
+    // includes any previously saved marks — so discarding one session's edits
+    // no longer throws away the case's earlier annotations.
     discard: async () => {
       const canvas = fabricRef.current;
       if (canvas && baselineRef.current) {
@@ -279,7 +441,8 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
         canvas.renderAll();
       }
     },
-    exportPNG: compositeAnnotatedImage,   // same full-res image, for the Download button
+    // Flattened PNG, built on demand for the Download button only.
+    exportPNG: compositeAnnotatedImage,
   }), [caseData, syncViewport, compositeAnnotatedImage]);
 
   // Convert a screen (mouse) position into IMAGE pixel coordinates by running it
@@ -312,20 +475,28 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
       const eraseAt = (ev) => {
         const pt = toImagePoint(ev.clientX, ev.clientY);
         const objs = canvas.getObjects();
+        // Walk BACKWARDS: fabric keeps objects in paint order, so the last one
+        // is the topmost on screen. Iterating in reverse means overlapping
+        // marks are erased in the order the user sees them.
         for (let i = objs.length - 1; i >= 0; i--) {
           const o = objs[i];
-          o.setCoords();
+          o.setCoords();                       // refresh fabric's cached corners
           const r = o.getBoundingRect();
+          // A thick stroke is drawn centred on the shape's edge, so half of it
+          // sits outside the bounding box. Padding by the stroke width means
+          // clicking the visible line erases, rather than feeling "just off".
           const pad = (o.strokeWidth || 2);
           if (pt.x >= r.left - pad && pt.x <= r.left + r.width + pad &&
               pt.y >= r.top - pad && pt.y <= r.top + r.height + pad) {
             canvas.remove(o);
             canvas.renderAll();
-            return;
+            return;                            // one mark per position, not all of them
           }
         }
       };
-      eraseAt(e.nativeEvent || e);
+      eraseAt(e.nativeEvent || e);             // erase on the initial tap too, not only on drag
+      // Listeners go on `window`, not the overlay: a fast drag can leave the
+      // element mid-stroke, and we still need the move/up events.
       const onMove = (ev) => eraseAt(ev);
       const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
       window.addEventListener('pointermove', onMove);
@@ -445,8 +616,10 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
       {/* Layer 1: OpenSeadragon renders the slide into this div. */}
       <div ref={containerRef} className="w-full h-full absolute inset-0" />
 
-      {/* Shown briefly while an intake patient's image is still being fetched. */}
-      {caseData?.hasImage && !caseData?.image && (
+      {/* Shown briefly while an intake patient's image is still being fetched.
+          Whole-slide cases skip this — they stream tiles instead of loading a
+          single file, so there's nothing to wait on before the viewer opens. */}
+      {caseData?.hasImage && !caseData?.image && !caseData?.dziUrl && (
         <div className="absolute inset-0 z-[55] flex items-center justify-center text-slate-400">
           <span className="flex items-center gap-2 text-sm">
             <Loader2 className="w-4 h-4 animate-spin" /> Loading slide…
@@ -454,14 +627,17 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
         </div>
       )}
 
-      {/* Layer 2: fabric annotation canvas. Shown only while annotating so the
-          original slide stays clean afterwards — the saved annotated image is
-          kept separately by the parent (it never modifies the live slide). The
-          canvas keeps its pixels while hidden, so compositing on save works. */}
+      {/* Layer 2: fabric annotation canvas — the marks themselves.
+          Now that annotations are stored as vectors rather than baked into a
+          flattened image, saved marks are drawn live over the slide whenever
+          the case is open, so a pathologist sees earlier findings immediately
+          instead of having to export a picture to check. `showAnnotations`
+          hides them again to inspect the clean original; the canvas keeps its
+          contents either way, so nothing is lost by toggling. */}
       <div
         ref={canvasElRef}
         className="absolute inset-0"
-        style={{ pointerEvents: 'none', zIndex: 50, visibility: annotationMode ? 'visible' : 'hidden' }}
+        style={{ pointerEvents: 'none', zIndex: 50, visibility: showAnnotations ? 'visible' : 'hidden' }}
       />
 
       {/* Layer 3: transparent mouse-capture overlay, present only when a tool +
@@ -482,6 +658,59 @@ const WsiViewer = forwardRef(({ caseData, annotationMode, annotationColor, annot
           onPointerMove={(e) => setHoverInImage(isInImage(toImagePoint(e.clientX, e.clientY)))}
           onPointerDown={handlePointerDown}
         />
+      )}
+
+      {/* Magnification presets + live readout — a microscope's turret.
+          Only rendered when the slide carries real calibration, since the
+          numbers are meaningless without it. Sits top-left, out of the way of
+          the annotation toolbar above and the zoom controls below. */}
+      {scaleState && (
+        <div className="absolute top-4 left-4 z-[65] flex items-center gap-1 p-1 rounded-xl bg-slate-900/80 backdrop-blur ring-1 ring-slate-700/60 shadow-lg">
+          {MAGNIFICATION_PRESETS.map((m) => {
+            // Presets above what the scan resolves are digital enlargement,
+            // not extra detail — flagged so the reading isn't misleading.
+            const beyondScan = nativeMagnification && m > nativeMagnification;
+            const active = Math.abs(scaleState.magnification - m) < Math.max(0.5, m * 0.03);
+            return (
+              <button
+                key={m}
+                onClick={() => goToMagnification(m)}
+                title={beyondScan
+                  ? `${m}x — beyond this scan's ${Math.round(nativeMagnification)}x resolution (digital enlargement)`
+                  : `View at ${m}x`}
+                className={`mono px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all ${
+                  active
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-300 hover:bg-slate-700/80 hover:text-white'
+                } ${beyondScan && !active ? 'opacity-50' : ''}`}
+              >
+                {m}x
+              </button>
+            );
+          })}
+          <div className="w-px h-5 bg-slate-700 mx-1" />
+          {/* The honest current value, which is rarely exactly a preset. */}
+          <span className="mono text-[11px] font-bold text-indigo-300 pr-2 tabular-nums">
+            {scaleState.magnification}x
+          </span>
+        </div>
+      )}
+
+      {/* Micron scale bar. The label is a round number and the bar's width is
+          computed from it, so the drawn length is exactly what it claims.
+          Sits bottom-LEFT beside the zoom controls: the bottom-right corner is
+          taken by the dashboard's floating "Prescription & Info" button, which
+          would otherwise cover the bar. */}
+      {scaleState && (
+        <div className="absolute bottom-5 left-20 z-[65] flex flex-col items-center gap-1 px-3 py-2 rounded-xl bg-slate-900/80 backdrop-blur ring-1 ring-slate-700/60 shadow-lg">
+          <span className="mono text-[11px] font-bold text-slate-200 tabular-nums">{scaleState.scaleBar.label}</span>
+          {/* End caps make the measured span unambiguous. */}
+          <div className="relative h-2 flex items-end" style={{ width: `${scaleState.scaleBar.widthPx}px` }}>
+            <div className="absolute left-0 bottom-0 w-px h-2 bg-slate-200" />
+            <div className="absolute right-0 bottom-0 w-px h-2 bg-slate-200" />
+            <div className="absolute left-0 right-0 bottom-0 h-px bg-slate-200" />
+          </div>
+        </div>
       )}
 
       {/* Prominent exit affordance while in full screen. */}

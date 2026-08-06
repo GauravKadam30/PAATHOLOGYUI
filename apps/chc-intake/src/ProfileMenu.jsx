@@ -27,9 +27,14 @@ export default function ProfileMenu({ user, onUpdated, onLogout }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
+  // Close the small menu and open the edit dialog, pre-filled with the current
+  // name/CHC (in case a previous edit attempt was cancelled with stale text in it).
   const openEdit = () => { setEdit({ fullName: user.fullName, chcName: user.chcName }); setError(null); setShowEdit(true); setOpen(false); };
+  // Close the small menu and open the "are you sure?" logout confirmation.
   const openLogout = () => { setShowLogout(true); setOpen(false); };
 
+  // Sends the edited name/CHC to the backend; on success, tells App.jsx about
+  // the new user object (via onUpdated) and closes the dialog.
   const saveProfile = async (e) => {
     e.preventDefault();
     setBusy(true); setError(null);
@@ -109,8 +114,8 @@ export default function ProfileMenu({ user, onUpdated, onLogout }) {
                 </div>
               )}
               <div>
-                <label className={labelCls}>Lab Attendant Name</label>
-                <input className={inputCls} required placeholder="Lab attendant name" value={edit.fullName}
+                <label className={labelCls}>User Name</label>
+                <input className={inputCls} required placeholder="User name" value={edit.fullName}
                   onChange={(e) => setEdit((f) => ({ ...f, fullName: e.target.value }))} />
               </div>
               <div>

@@ -3,24 +3,43 @@ import {
   Microscope, LogIn, UserPlus, KeyRound, Loader2, AlertCircle, CheckCircle2,
   ShieldCheck, Images, RefreshCw,
 } from 'lucide-react';
-import { login, signup, resetPassword } from './api';
+import { login, signup, requestReset, resetPassword } from './api';
 
 /*
  * Login.jsx — the sign-in / sign-up / reset screen shown before the intake form.
  *
  * A split layout: a dark brand panel on the left (hidden on phones, where the
  * form panel shows a small logo of its own instead) and the actual form on the
- * right. Three modes toggled by links at the bottom:
+ * right. Three modes, toggled by the links at the bottom:
+ *
  *   • 'login'  — email + password.
- *   • 'signup' — also asks the lab attendant's name and CHC name.
- *   • 'reset'  — "forgot password": prove who you are with email + name + CHC,
- *                then set a new password (no email server needed).
- * On a successful login/signup it calls onAuth(user); App.jsx then swaps in the
- * intake screen.
+ *   • 'signup' — also asks the user's name and CHC name.
+ *   • 'reset'  — "forgot password", in TWO steps (see `codeSent` below):
+ *                  1. enter your email; the server issues a one-time code and
+ *                     EMAILS it — never returns it in the response. (If the
+ *                     backend has no mail server configured, it falls back to
+ *                     printing the code to its own console instead, for local
+ *                     development; either way this screen just shows whatever
+ *                     message the server sends back, so it reads correctly
+ *                     under both.)
+ *                  2. enter that code plus a new password.
+ *                Replaces an earlier version that accepted email + name + CHC
+ *                as proof of identity — all of which any colleague already
+ *                knows, so it verified essentially nothing.
+ *
+ * Every request from this app is stamped with role 'lab_attendant' (see
+ * api.js), which is what keeps these accounts separate from the pathology
+ * console's — the same email can hold one of each.
+ *
+ * On a successful login/signup it calls onAuth(user); App.jsx then swaps in
+ * the intake screen.
  */
 export default function Login({ onAuth }) {
   const [mode, setMode] = useState('login');            // 'login' | 'signup' | 'reset'
-  const [form, setForm] = useState({ fullName: '', chcName: '', email: '', password: '', newPassword: '' });
+  const [form, setForm] = useState({ fullName: '', chcName: '', email: '', password: '', newPassword: '', code: '' });
+  // Reset is now two steps: request a code, then use it. `codeSent` says
+  // which of the two the form is currently showing.
+  const [codeSent, setCodeSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);           // green success message (after a reset)
@@ -28,16 +47,30 @@ export default function Login({ onAuth }) {
 
   const isSignup = mode === 'signup';
   const isReset = mode === 'reset';
-  const go = (m) => { setMode(m); setError(null); };     // switch mode, clear any error
+  const go = (m) => { setMode(m); setError(null); setNotice(null); setCodeSent(false); };  // switch mode, clear state
 
   const submit = async (e) => {
     e.preventDefault();
     setError(null); setNotice(null); setBusy(true);
     try {
       if (isReset) {
-        await resetPassword({ email: form.email, fullName: form.fullName, chcName: form.chcName, newPassword: form.newPassword });
-        setMode('login');                               // back to sign-in with a confirmation
-        setNotice('Password updated — please sign in with your new password.');
+        if (!codeSent) {
+          // Step 1: ask for a code. Where it actually GOES depends on backend
+          // configuration — emailed if SMTP is set up there, otherwise printed
+          // to the server's own console for an operator to hand over. Either
+          // way it is a real second factor a colleague can't just guess, which
+          // is what makes this stronger than the old "name + CHC" check. The
+          // message shown here comes straight from the server's response
+          // rather than being guessed on this end, so it's always accurate.
+          const { message } = await requestReset(form.email);
+          setCodeSent(true);
+          setNotice(message || 'A reset code has been issued. Enter it below.');
+        } else {
+          // Step 2: exchange the code for a new password.
+          await resetPassword({ email: form.email, code: form.code, newPassword: form.newPassword });
+          setMode('login'); setCodeSent(false);
+          setNotice('Password updated — please sign in with your new password.');
+        }
       } else if (isSignup) {
         onAuth(await signup(form));
       } else {
@@ -57,7 +90,7 @@ export default function Login({ onAuth }) {
 
   const title = isReset ? 'Reset your password' : isSignup ? 'Create your account' : 'Welcome back';
   const subtitle = isReset
-    ? 'Confirm your details, then choose a new password.'
+    ? (codeSent ? 'Enter the reset code, then choose a new password.' : 'Enter your email to be issued a reset code.')
     : isSignup ? 'Register as a lab attendant to submit cases.' : 'Sign in to submit patient cases.';
 
   // `min-h-[100dvh] grid lg:grid-cols-[44%_1fr]` — no outer padding or capped
@@ -135,12 +168,19 @@ export default function Login({ onAuth }) {
               </div>
             )}
 
+            {/* One <form> serves all three modes; which fields appear is driven
+                by `mode` (and, for reset, by `codeSent`). Keeping it as a
+                single form means the browser's own validation, Enter-to-submit
+                and password-manager behaviour work everywhere without
+                duplicating markup three times. */}
             <form onSubmit={submit} className="space-y-4">
-              {/* Name + CHC are needed for sign-up AND for the reset identity check */}
-              {(isSignup || isReset) && (
+              {/* Name + CHC are collected only at sign-up. Reset no longer asks
+                  for them: they were being used as proof of identity, which a
+                  colleague could trivially satisfy. */}
+              {isSignup && (
                 <>
                   <div>
-                    <label className={labelCls}>Lab Attendant Name</label>
+                    <label className={labelCls}>User Name</label>
                     <input className={inputCls} placeholder="e.g. Anjali Devi" required
                       value={form.fullName} onChange={(e) => set('fullName', e.target.value)} />
                   </div>
@@ -158,7 +198,8 @@ export default function Login({ onAuth }) {
                   value={form.email} onChange={(e) => set('email', e.target.value)} />
               </div>
 
-              {/* Login/Signup use "password"; reset uses "newPassword" */}
+              {/* Login and sign-up use "password". Reset doesn't ask for one
+                  at all in step 1 — only the email — so this is hidden there. */}
               {!isReset && (
                 <div>
                   <label className={labelCls}>Password</label>
@@ -166,12 +207,28 @@ export default function Login({ onAuth }) {
                     value={form.password} onChange={(e) => set('password', e.target.value)} />
                 </div>
               )}
-              {isReset && (
-                <div>
-                  <label className={labelCls}>New Password</label>
-                  <input type="password" className={inputCls} placeholder="At least 6 characters" required
-                    value={form.newPassword} onChange={(e) => set('newPassword', e.target.value)} />
-                </div>
+              {/* Reset step 2, revealed once a code has been issued. Until
+                  then the form shows just the email field and a "Send reset
+                  code" button. */}
+              {isReset && codeSent && (
+                <>
+                  <div>
+                    <label className={labelCls}>Reset Code</label>
+                    {/* Digits only, six of them: `inputMode="numeric"` brings up
+                        the number pad on a phone, and the onChange strips
+                        anything non-numeric so a pasted "123 456" still works.
+                        Wide letter-spacing makes the code easy to read back to
+                        whoever is reading it out. */}
+                    <input className={`${inputCls} mono tracking-[0.3em] text-center`} placeholder="000000"
+                      inputMode="numeric" maxLength={6} required
+                      value={form.code} onChange={(e) => set('code', e.target.value.replace(/\D/g, ''))} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>New Password</label>
+                    <input type="password" className={inputCls} placeholder="At least 6 characters" required
+                      value={form.newPassword} onChange={(e) => set('newPassword', e.target.value)} />
+                  </div>
+                </>
               )}
 
               <button type="submit" disabled={busy}
@@ -179,7 +236,7 @@ export default function Login({ onAuth }) {
                 {busy
                   ? <><Loader2 className="w-4 h-4 animate-spin" /> Please wait…</>
                   : isReset
-                    ? <><KeyRound className="w-4 h-4" /> Update password</>
+                    ? <><KeyRound className="w-4 h-4" /> {codeSent ? 'Update password' : 'Send reset code'}</>
                     : isSignup
                       ? <><UserPlus className="w-4 h-4" /> Create account</>
                       : <><LogIn className="w-4 h-4" /> Sign in</>}

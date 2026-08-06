@@ -1,0 +1,291 @@
+/**
+ * api.test.js — automated checks for the paths where a bug would be expensive:
+ * authentication, role separation, note saving under concurrency, duplicate
+ * patient IDs, archiving, and token revocation.
+ *
+ * Uses node:test and node:assert (both built into Node) so there is no test
+ * framework to install. The server is started as a real child process against
+ * a THROWAWAY database and uploads directory, so nothing here can touch real
+ * patient data — see the env vars in `startServer()`.
+ *
+ * Run with:  npm test -w apps/server
+ */
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SERVER = path.join(__dirname, '..', 'server.js');
+const PORT = 3199;                       // deliberately not 3001, so a running dev server is untouched
+const BASE = `http://127.0.0.1:${PORT}`;
+
+let proc;
+let tmpDir;
+
+const api = async (pathname, { method = 'GET', body, token } = {}) => {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${pathname}`, {
+    method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let json = null;
+  try { json = await res.json(); } catch { /* some responses have no body */ }
+  return { status: res.status, body: json };
+};
+
+const uniqueEmail = (p) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
+
+before(async () => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-test-'));
+  proc = spawn(process.execPath, [SERVER], {
+    env: {
+      ...process.env,
+      PORT: String(PORT),
+      TILE_PORT: '3299',
+      // Point every piece of on-disk state at the throwaway directory.
+      DB_FILE: path.join(tmpDir, 'test.db'),
+      UPLOADS_DIR: path.join(tmpDir, 'uploads'),
+      BACKUP_DIR: path.join(tmpDir, 'backups'),
+      BACKUP_INTERVAL_MS: String(24 * 60 * 60 * 1000),
+      JWT_SECRET: 'test-secret-not-used-anywhere-real',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  proc.stdout.on('data', () => {});      // swallow: keeps test output readable
+  proc.stderr.on('data', () => {});
+
+  // Wait for it to answer rather than guessing at a fixed sleep.
+  for (let i = 0; i < 100; i++) {
+    try {
+      const r = await fetch(BASE, { signal: AbortSignal.timeout(500) });
+      if (r.ok) return;
+    } catch { /* not up yet */ }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error('test server did not start');
+});
+
+after(() => {
+  try { proc?.kill(); } catch { /* already gone */ }
+  try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best effort */ }
+});
+
+// --- Authentication ----------------------------------------------------------
+
+test('signup rejects a password under 6 characters', async () => {
+  const { status } = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email: uniqueEmail('short'), password: '12345', fullName: 'A', chcName: 'B', role: 'lab_attendant' },
+  });
+  assert.equal(status, 400);
+});
+
+test('the same email can hold both a lab-attendant and a pathologist account', async () => {
+  const email = uniqueEmail('dual');
+  const a = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email, password: 'secret123', fullName: 'Dual A', chcName: 'CHC', role: 'lab_attendant' },
+  });
+  const b = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email, password: 'secret123', fullName: 'Dual B', role: 'pathologist' },
+  });
+  assert.equal(a.status, 200, 'lab attendant signup should succeed');
+  assert.equal(b.status, 200, 'pathologist signup with the same email should also succeed');
+  assert.notEqual(a.body.user.id, b.body.user.id, 'they must be separate accounts');
+});
+
+test('a duplicate signup within the SAME role is rejected', async () => {
+  const email = uniqueEmail('dupe');
+  const body = { email, password: 'secret123', fullName: 'X', chcName: 'CHC', role: 'lab_attendant' };
+  assert.equal((await api('/api/auth/signup', { method: 'POST', body })).status, 200);
+  assert.equal((await api('/api/auth/signup', { method: 'POST', body })).status, 409);
+});
+
+test('logging in with the wrong portal is refused, not silently allowed', async () => {
+  const email = uniqueEmail('portal');
+  await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email, password: 'secret123', fullName: 'P', chcName: 'CHC', role: 'lab_attendant' },
+  });
+  const wrong = await api('/api/auth/login', {
+    method: 'POST', body: { email, password: 'secret123', role: 'pathologist' },
+  });
+  assert.equal(wrong.status, 403);
+  assert.match(wrong.body.error, /CHC Intake/);
+});
+
+// --- Token revocation --------------------------------------------------------
+
+test('a token stops working once the account signs out everywhere', async () => {
+  const email = uniqueEmail('revoke');
+  const { body: signed } = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email, password: 'secret123', fullName: 'R', chcName: 'CHC', role: 'lab_attendant' },
+  });
+  const token = signed.token;
+  assert.equal((await api('/api/auth/me', { token })).status, 200, 'token should work initially');
+
+  await api('/api/auth/logout-all', { method: 'POST', token });
+  assert.equal((await api('/api/auth/me', { token })).status, 401, 'the same token must now be rejected');
+});
+
+// --- Cases -------------------------------------------------------------------
+
+async function makeAttendant() {
+  const { body } = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email: uniqueEmail('att'), password: 'secret123', fullName: 'Att', chcName: `CHC-${Math.random()}`, role: 'lab_attendant' },
+  });
+  return body.token;
+}
+
+test('a pathologist account cannot submit a case', async () => {
+  const { body } = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email: uniqueEmail('path'), password: 'secret123', fullName: 'Dr P', role: 'pathologist' },
+  });
+  const res = await api('/api/cases', { method: 'POST', token: body.token, body: { patient: 'Nope' } });
+  assert.equal(res.status, 403);
+});
+
+test('a duplicate CHC Patient ID at the same centre is rejected', async () => {
+  const token = await makeAttendant();
+  const chcId = `ID-${Date.now()}`;
+  const first = await api('/api/cases', { method: 'POST', token, body: { patient: 'First', chcId } });
+  assert.equal(first.status, 200);
+
+  const second = await api('/api/cases', { method: 'POST', token, body: { patient: 'Second', chcId } });
+  assert.equal(second.status, 409, 'the second case must be refused');
+  assert.match(second.body.error, /already used/);
+});
+
+test('archiving hides a case from the worklist and restoring brings it back', async () => {
+  const token = await makeAttendant();
+  const { body: created } = await api('/api/cases', { method: 'POST', token, body: { patient: 'Archive Me' } });
+
+  const visible = async () => (await api('/api/cases')).body.some((c) => c.id === created.id);
+  assert.equal(await visible(), true);
+
+  await api(`/api/cases/${created.id}/archived`, { method: 'PATCH', token, body: { archived: true } });
+  assert.equal(await visible(), false, 'archived cases must not appear in the queue');
+
+  await api(`/api/cases/${created.id}/archived`, { method: 'PATCH', token, body: { archived: false } });
+  assert.equal(await visible(), true, 'restoring must bring it back');
+});
+
+// --- Notes: the concurrency bug this refactor existed to fix ------------------
+
+test('simultaneous saves on DIFFERENT cases both survive', async () => {
+  const token = await makeAttendant();
+  const a = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Race A' } })).body;
+  const b = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Race B' } })).body;
+
+  // Fired together, as two people saving at the same moment would. Under the
+  // old blob-per-key storage, whichever landed second overwrote the other.
+  await Promise.all([
+    api(`/api/cases/${a.id}/notes/pathologist`, { method: 'PUT', token, body: { body: 'findings for A' } }),
+    api(`/api/cases/${b.id}/notes/pathologist`, { method: 'PUT', token, body: { body: 'findings for B' } }),
+  ]);
+
+  const notes = (await api('/api/notes')).body;
+  assert.equal(notes[a.id]?.pathologist, 'findings for A');
+  assert.equal(notes[b.id]?.pathologist, 'findings for B');
+});
+
+test('the three note kinds on one case are independent', async () => {
+  const token = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Kinds' } })).body;
+
+  await Promise.all([
+    api(`/api/cases/${c.id}/notes/clinical`, { method: 'PUT', token, body: { body: 'clinical text' } }),
+    api(`/api/cases/${c.id}/notes/pathologist`, { method: 'PUT', token, body: { body: 'pathologist text' } }),
+    api(`/api/cases/${c.id}/notes/medicine`, { method: 'PUT', token, body: { body: 'medicine text' } }),
+  ]);
+
+  const notes = (await api('/api/notes')).body[c.id];
+  assert.equal(notes.clinical, 'clinical text');
+  assert.equal(notes.pathologist, 'pathologist text');
+  assert.equal(notes.medicine, 'medicine text');
+});
+
+test('an unknown note kind is rejected', async () => {
+  const token = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Bad Kind' } })).body;
+  const res = await api(`/api/cases/${c.id}/notes/nonsense`, { method: 'PUT', token, body: { body: 'x' } });
+  assert.equal(res.status, 400);
+});
+
+test('saving a note requires sign-in', async () => {
+  const token = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Anon' } })).body;
+  const res = await api(`/api/cases/${c.id}/notes/clinical`, { method: 'PUT', body: { body: 'x' } });
+  assert.equal(res.status, 401);
+});
+
+// --- Annotations -------------------------------------------------------------
+
+test('annotations round-trip as vector data', async () => {
+  const token = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Marks' } })).body;
+  const marks = { version: '7.4.0', objects: [{ type: 'Ellipse', left: 100, top: 200, rx: 50, ry: 25 }] };
+
+  await api(`/api/cases/${c.id}/annotations`, { method: 'PUT', token, body: marks });
+  const stored = (await api('/api/annotations')).body[c.id];
+  assert.equal(stored.objects.length, 1);
+  assert.equal(stored.objects[0].left, 100);
+});
+
+// --- Incremental polling -----------------------------------------------------
+
+test('?since= returns only cases changed after that moment', async () => {
+  const token = await makeAttendant();
+  await api('/api/cases', { method: 'POST', token, body: { patient: 'Before' } });
+
+  const watermark = new Date().toISOString();
+  await new Promise((r) => setTimeout(r, 15));           // ensure a distinct timestamp
+
+  const after = (await api('/api/cases', { method: 'POST', token, body: { patient: 'After' } })).body;
+  const changed = (await api(`/api/cases?since=${encodeURIComponent(watermark)}`)).body;
+
+  assert.ok(changed.some((c) => c.id === after.id), 'the newer case must be included');
+  assert.ok(changed.every((c) => c.updatedAt > watermark), 'nothing older should come back');
+});
+
+// --- Password reset ----------------------------------------------------------
+
+test('requesting a reset never reveals whether the account exists', async () => {
+  const real = uniqueEmail('reset');
+  await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email: real, password: 'secret123', fullName: 'Reset', chcName: 'CHC', role: 'lab_attendant' },
+  });
+  const known = await api('/api/auth/request-reset', { method: 'POST', body: { email: real } });
+  const unknown = await api('/api/auth/request-reset', { method: 'POST', body: { email: uniqueEmail('ghost') } });
+
+  assert.equal(known.status, 200);
+  assert.equal(unknown.status, 200);
+  assert.deepEqual(known.body, unknown.body, 'both answers must be identical');
+});
+
+test('a wrong reset code does not change the password', async () => {
+  const email = uniqueEmail('badcode');
+  await api('/api/auth/signup', {
+    method: 'POST',
+    body: { email, password: 'secret123', fullName: 'Bad', chcName: 'CHC', role: 'lab_attendant' },
+  });
+  await api('/api/auth/request-reset', { method: 'POST', body: { email } });
+
+  const res = await api('/api/auth/reset-password', {
+    method: 'POST', body: { email, code: '000000', newPassword: 'brandnew123' },
+  });
+  assert.equal(res.status, 400);
+
+  // The original password must still work.
+  const login = await api('/api/auth/login', { method: 'POST', body: { email, password: 'secret123', role: 'lab_attendant' } });
+  assert.equal(login.status, 200);
+});
