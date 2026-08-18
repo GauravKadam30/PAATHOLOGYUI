@@ -9,7 +9,22 @@
  *     token can't be forged or tampered with.
  */
 import crypto from 'crypto';
-import { getUserById } from './db.js';
+import { getUserById } from './db.ts';
+import type { Request, Response, NextFunction } from 'express';
+import type { UserRow, PublicUser } from './types.ts';
+
+/** Express request after authRequired has run — `user` is guaranteed. */
+export interface AuthedRequest extends Request {
+  user: UserRow;
+}
+
+/** What a verified token carries. */
+export interface TokenPayload {
+  sub: number;
+  role: string;
+  ver: number;
+  exp: number;
+}
 
 // The secret used to sign tokens. A hardcoded fallback is fine while
 // developing locally, but silently falling back in production would mean
@@ -29,12 +44,12 @@ if (!process.env.JWT_SECRET) {
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // tokens last 7 days
 
 // --- Password hashing --------------------------------------------------------
-export function hashPassword(password) {
+export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16);
   const hash = crypto.scryptSync(String(password), salt, 64);
   return `${salt.toString('hex')}:${hash.toString('hex')}`;   // stored as "salt:hash"
 }
-export function verifyPassword(password, stored) {
+export function verifyPassword(password: string, stored: string): boolean {
   const [saltHex, hashHex] = String(stored).split(':');
   if (!saltHex || !hashHex) return false;
   const expected = Buffer.from(hashHex, 'hex');
@@ -44,8 +59,8 @@ export function verifyPassword(password, stored) {
 }
 
 // --- Signed tokens -----------------------------------------------------------
-const b64u = (s) => Buffer.from(s).toString('base64url');
-export function signToken(user) {
+const b64u = (s: string): string => Buffer.from(s).toString('base64url');
+export function signToken(user: UserRow): string {
   // `ver` carries the account's token_version. authRequired compares it with
   // the current value in the database, so bumping that column invalidates
   // every token already issued — the only way to actually revoke a stolen
@@ -60,9 +75,11 @@ export function signToken(user) {
   const sig = crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
   return `${body}.${sig}`;
 }
-export function verifyToken(token) {
+export function verifyToken(token: string | null): TokenPayload | null {
   if (!token || typeof token !== 'string' || !token.includes('.')) return null;
   const [body, sig] = token.split('.');
+  // `noUncheckedIndexedAccess`: a malformed token can yield undefined halves.
+  if (!body || !sig) return null;
   const expected = crypto.createHmac('sha256', SECRET).update(body).digest('base64url');
   const a = Buffer.from(sig || ''), b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;   // bad signature
@@ -74,12 +91,17 @@ export function verifyToken(token) {
 }
 
 // --- Express middleware: require a valid signed-in user ----------------------
-export function authRequired(req, res, next) {
+// `async` and the `await` below are essential, not cosmetic. The data layer
+// can be backed by PostgreSQL, where getUserById returns a PROMISE. Without
+// awaiting, `user` would be a pending promise — which is truthy, so the
+// "account still exists" check below would pass for a deleted account, and
+// `req.user.id` would then be undefined for every downstream handler.
+export async function authRequired(req: Request, res: Response, next: NextFunction): Promise<void | Response> {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   const payload = verifyToken(token);
   if (!payload) return res.status(401).json({ error: 'Please sign in.' });
-  const user = getUserById(payload.sub);
+  const user = await getUserById(payload.sub);
   if (!user) return res.status(401).json({ error: 'Your session is no longer valid.' });
   // Revocation check: a token minted before the account's version was bumped
   // (password change, "sign out everywhere") is refused even though its
@@ -87,25 +109,25 @@ export function authRequired(req, res, next) {
   if ((payload.ver ?? 0) !== (user.token_version ?? 0)) {
     return res.status(401).json({ error: 'Your session has ended. Please sign in again.' });
   }
-  req.user = user;
+  (req as AuthedRequest).user = user;
   next();
 }
 
 // --- One-time password reset codes ------------------------------------------
 // Six digits, generated with a cryptographic RNG (not Math.random) and stored
 // only as a hash, so the database never holds a usable code.
-export function generateResetCode() {
+export function generateResetCode(): string {
   return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
 }
-export const hashResetCode = (code) =>
+export const hashResetCode = (code: string | number): string =>
   crypto.createHash('sha256').update(`${SECRET}:${code}`).digest('hex');
-export function verifyResetCode(code, storedHash) {
+export function verifyResetCode(code: string, storedHash: string): boolean {
   const a = Buffer.from(hashResetCode(String(code)));
   const b = Buffer.from(String(storedHash));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 // Shape a user record for sending to the browser (drops the password hash).
-export const publicUser = (u) => u && ({
+export const publicUser = (u: UserRow | undefined | null): PublicUser | undefined => u ? ({
   id: u.id, email: u.email, fullName: u.full_name, chcName: u.chc_name, role: u.role,
-});
+}) : undefined;

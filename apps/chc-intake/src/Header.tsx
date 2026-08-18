@@ -1,5 +1,6 @@
 import { Building2 } from 'lucide-react';
 import ProfileMenu from './ProfileMenu';
+import type { User } from './types';
 
 /*
  * Header.jsx — the dark bar across the top of the page ("Pro Workstation" theme).
@@ -11,7 +12,11 @@ import ProfileMenu from './ProfileMenu';
  *   onLogout   — called when the user confirms logging out (via the menu)
  *   onUpdated  — called with the updated user after an "Edit profile" save
  */
-export default function Header({ user, onLogout, onUpdated }) {
+export default function Header({ user, onLogout, onUpdated }: {
+  user: User;
+  onLogout: () => void;
+  onUpdated: (user: User) => void;
+}) {
   return (
     // "sticky top-0" keeps this bar pinned to the top of the screen while you scroll.
     <header className="sticky top-0 z-10 rail-dark border-b border-slate-800">

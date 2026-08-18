@@ -34,7 +34,8 @@
  * rather than a guessed one — an invented measurement on a diagnostic image is
  * worse than none.
  */
-import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from 'react';
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import OpenSeadragon from 'openseadragon';                 // deep-zoom slide viewer
 import * as FabricModule from 'fabric';                    // 2D canvas drawing library
 import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X, Loader2 } from 'lucide-react'; // control icons
@@ -42,6 +43,7 @@ import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X, Loader2 } from 'lucide-re
 // everything about how marks are stored and rendered.
 import { resolveImageUrl, resolveDziUrl, renderAnnotatedImage } from './annotations';
 import { fetchSlideInfo } from './api';                    // scanner calibration (microns per pixel)
+import type { Case, AnnotationData, SlideInfo } from './types';
 
 // fabric v7 has no named `fabric` export, so we use the whole module namespace.
 const fabric = FabricModule;
@@ -75,23 +77,39 @@ const TARGET_SCALE_BAR_PX = 130;   // preferred on-screen length before snapping
 // How many microns one SCREEN pixel currently covers.
 // `zoom` is OpenSeadragon's viewport zoom, where 1 means the image width
 // exactly fills the container.
-const micronsPerScreenPixel = (mpp, imageWidth, containerWidth, zoom) =>
+const micronsPerScreenPixel = (mpp: number, imageWidth: number, containerWidth: number, zoom: number): number =>
   (mpp * imageWidth) / (zoom * containerWidth);
 
 // The objective magnification the current view corresponds to.
-const magnificationFor = (mpp, imageWidth, containerWidth, zoom) =>
+const magnificationFor = (mpp: number, imageWidth: number, containerWidth: number, zoom: number): number =>
   MICRONS_PER_PIXEL_AT_1X / micronsPerScreenPixel(mpp, imageWidth, containerWidth, zoom);
 
 // The viewport zoom needed to display at a given objective magnification —
 // the inverse of magnificationFor(), used by the preset buttons.
-const zoomForMagnification = (mpp, imageWidth, containerWidth, magnification) =>
+const zoomForMagnification = (mpp: number, imageWidth: number, containerWidth: number, magnification: number): number =>
   (mpp * imageWidth * magnification) / (MICRONS_PER_PIXEL_AT_1X * containerWidth);
+
+/** A scale bar ready to draw: how long it claims to be, and how wide to draw it. */
+interface ScaleBar {
+  microns: number;
+  widthPx: number;
+  label: string;
+}
+
+/** What the overlay currently displays. Null when the slide has no calibration. */
+interface ScaleState {
+  magnification: number;
+  scaleBar: ScaleBar;
+}
 
 // Choose a round micron length whose on-screen width lands near the target,
 // and report both the label and the exact pixel width to draw.
-function computeScaleBar(micronsPerPx) {
+function computeScaleBar(micronsPerPx: number): ScaleBar {
   const rawMicrons = TARGET_SCALE_BAR_PX * micronsPerPx;
-  const microns = NICE_SCALE_STEPS.find((s) => s >= rawMicrons) ?? NICE_SCALE_STEPS[NICE_SCALE_STEPS.length - 1];
+  // `?? last` covers both "nothing is big enough" and the possibly-undefined
+  // index access that noUncheckedIndexedAccess flags.
+  const microns = NICE_SCALE_STEPS.find((s) => s >= rawMicrons)
+    ?? NICE_SCALE_STEPS[NICE_SCALE_STEPS.length - 1]!;
   return {
     microns,
     widthPx: microns / micronsPerPx,
@@ -99,35 +117,56 @@ function computeScaleBar(micronsPerPx) {
   };
 }
 
+/** The handle the parent gets on this viewer, via its ref. */
+export interface WsiViewerHandle {
+  /** Current marks as vector JSON (a few KB) for the parent to persist. */
+  save: () => AnnotationData | null;
+  /** Roll back to the state this drawing session began in. */
+  discard: () => Promise<void>;
+  /** A flattened PNG, built on demand for downloads only. */
+  exportPNG: () => Promise<string | null>;
+}
+
+interface WsiViewerProps {
+  caseData: Case;
+  annotationMode: boolean;
+  annotationColor: string | null;
+  annotationTool: string | null;
+  /**
+   * Previously saved marks for this case (fabric JSON in image coordinates).
+   * They're loaded onto the canvas when the slide opens, so a pathologist sees
+   * earlier annotations straight away and can edit them rather than starting
+   * from scratch each session.
+   */
+  savedAnnotations?: AnnotationData | null;
+  /** Lets the viewer show the clean, unmarked slide without discarding anything. */
+  showAnnotations?: boolean;
+}
+
 // `forwardRef` lets the parent hold a handle to this component so it can call
 // save()/discard()/exportPNG() (wired up via useImperativeHandle further down).
-const WsiViewer = forwardRef(({
+const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
   caseData, annotationMode, annotationColor, annotationTool,
-  // Previously saved marks for this case (fabric JSON in image coordinates).
-  // They're loaded onto the canvas when the slide opens, so a pathologist
-  // sees earlier annotations straight away and can edit them rather than
-  // starting from scratch each session.
   savedAnnotations,
-  // Lets the viewer show the clean, unmarked slide without discarding anything.
   showAnnotations = true,
 }, ref) => {
   // --- Refs hold long-lived objects/DOM nodes that must survive re-renders ---
-  const viewerRef = useRef(null);       // the OpenSeadragon viewer instance
-  const containerRef = useRef(null);    // the <div> OpenSeadragon renders into
-  const canvasElRef = useRef(null);     // wrapper <div> that holds the fabric canvas
-  const fabricRef = useRef(null);       // the fabric.Canvas instance
-  const imgSizeRef = useRef(null);      // natural image size {x, y} in image px
-  const baselineRef = useRef(null);     // canvas JSON snapshot taken when annotation mode was enabled (for "Don't save")
+  const viewerRef = useRef<OpenSeadragon.Viewer | null>(null);   // the OpenSeadragon viewer instance
+  const containerRef = useRef<HTMLDivElement | null>(null);      // the <div> OpenSeadragon renders into
+  const canvasElRef = useRef<HTMLDivElement | null>(null);       // wrapper <div> that holds the fabric canvas
+  const fabricRef = useRef<FabricModule.Canvas | null>(null);    // the fabric.Canvas instance
+  const imgSizeRef = useRef<OpenSeadragon.Point | null>(null);   // natural image size {x, y} in image px
+  const baselineRef = useRef<AnnotationData | null>(null);       // canvas snapshot taken when annotation mode was enabled (for "Don't save")
 
   // --- State that, when changed, should re-render the component ---
   const [isReady, setIsReady] = useState(false);          // gate: only build the viewer after first render
   const [hoverInImage, setHoverInImage] = useState(false); // is the cursor currently over the slide image?
   const [isFullPage, setIsFullPage] = useState(false);     // is the viewer in our custom full-screen mode?
-  // Scanner calibration for this slide ({ width, height, mppX, ... }), or null
-  // for an ordinary photo case / a slide with no calibration recorded.
-  const [slideInfo, setSlideInfo] = useState(null);
-  // Recomputed as the user zooms: { magnification, scaleBar } or null.
-  const [scaleState, setScaleState] = useState(null);
+  // Scanner calibration for this slide, or null for an ordinary photo case /
+  // a slide with no calibration recorded.
+  const [slideInfo, setSlideInfo] = useState<SlideInfo | null>(null);
+  // Recomputed as the user zooms.
+  const [scaleState, setScaleState] = useState<ScaleState | null>(null);
 
   // Drawing is allowed once the user has picked a tool, plus a color for the
   // drawing tools — the eraser doesn't need one.
@@ -158,6 +197,11 @@ const WsiViewer = forwardRef(({
   useEffect(() => {
     const viewer = viewerRef.current;
     if (!viewer || !slideInfo?.mppX) return;
+    // Pulled out of the optional-chained object so TypeScript can see it stays
+    // a number inside the closure below — `slideInfo.mppX` on its own is
+    // `number | null`, and the guard above doesn't narrow across a callback.
+    const mpp = slideInfo.mppX;
+    const imageWidth = slideInfo.width;
 
     const recompute = () => {
       const containerWidth = viewer.container?.clientWidth;
@@ -165,9 +209,9 @@ const WsiViewer = forwardRef(({
       const zoom = viewer.viewport.getZoom(true);
       if (!zoom || !isFinite(zoom)) return;
 
-      const perPx = micronsPerScreenPixel(slideInfo.mppX, slideInfo.width, containerWidth, zoom);
+      const perPx = micronsPerScreenPixel(mpp, imageWidth, containerWidth, zoom);
       if (!isFinite(perPx) || perPx <= 0) return;
-      const magnification = magnificationFor(slideInfo.mppX, slideInfo.width, containerWidth, zoom);
+      const magnification = magnificationFor(mpp, imageWidth, containerWidth, zoom);
       const scaleBar = computeScaleBar(perPx);
 
       setScaleState((prev) => {
@@ -185,14 +229,18 @@ const WsiViewer = forwardRef(({
     // moved anything — so listening to it alone leaves the readout showing the
     // previous position. 'animation' fires each frame while the view is
     // settling and 'animation-finish' guarantees a final, exact sample.
-    const events = ['zoom', 'animation', 'animation-finish', 'open', 'resize'];
-    events.forEach((e) => viewer.addHandler(e, recompute));
-    return () => events.forEach((e) => viewer.removeHandler(e, recompute));
+    // These five are all real OpenSeadragon events, but its typings model the
+    // event map as a closed union, so a string[] doesn't satisfy it. The cast
+    // is narrow and deliberate rather than loosening the handler signature.
+    const events = ['zoom', 'animation', 'animation-finish', 'open', 'resize'] as const;
+    type ViewerEvent = Parameters<OpenSeadragon.Viewer['addHandler']>[0];
+    events.forEach((e) => viewer.addHandler(e as ViewerEvent, recompute));
+    return () => events.forEach((e) => viewer.removeHandler(e as ViewerEvent, recompute));
   }, [slideInfo, isReady, caseData, isFullPage]);
 
   // Jump straight to a standard objective magnification, like turning a
   // microscope's turret. Clamped to what the viewer allows.
-  const goToMagnification = useCallback((magnification) => {
+  const goToMagnification = useCallback((magnification: number) => {
     const viewer = viewerRef.current;
     if (!viewer || !slideInfo?.mppX) return;
     const containerWidth = viewer.container?.clientWidth;
@@ -341,7 +389,10 @@ const WsiViewer = forwardRef(({
     if (!viewerRef.current) return;
     // While drawing, disable OSD's own mouse pan/zoom so dragging draws instead.
     viewerRef.current.setMouseNavEnabled(!annotationMode);
-    viewerRef.current.innerTracker.setTracking(!annotationMode);
+    // `innerTracker` is real and public in OpenSeadragon but missing from its
+    // bundled .d.ts, so it needs a narrow cast rather than an `any` viewer.
+    (viewerRef.current as unknown as { innerTracker: { setTracking(v: boolean): void } })
+      .innerTracker.setTracking(!annotationMode);
     // Snapshot the canvas as it stands when the session begins — including
     // any previously saved marks. "Don't save" rolls back to THIS, i.e. the
     // last saved state, rather than wiping the case's whole history as it did
@@ -384,7 +435,7 @@ const WsiViewer = forwardRef(({
   useEffect(() => {
     if (!isFullPage) return;
     const onPop = () => setIsFullPage(false);
-    const onKey = (e) => { if (e.key === 'Escape') exitFullPage(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') exitFullPage(); };
     window.addEventListener('popstate', onPop);
     window.addEventListener('keydown', onKey);
     return () => {
@@ -447,23 +498,27 @@ const WsiViewer = forwardRef(({
 
   // Convert a screen (mouse) position into IMAGE pixel coordinates by running it
   // through the INVERSE of the current viewport transform.
-  const toImagePoint = (clientX, clientY) => {
+  // Returns null when the canvas or container isn't mounted yet, so every
+  // caller has to handle "not ready" rather than crashing on a null deref.
+  const toImagePoint = (clientX: number, clientY: number): FabricModule.Point | null => {
     const canvas = fabricRef.current;
-    const rect = containerRef.current.getBoundingClientRect();
+    const container = containerRef.current;
+    if (!canvas || !container) return null;
+    const rect = container.getBoundingClientRect();
     const inv = fabric.util.invertTransform(canvas.viewportTransform);
     return fabric.util.transformPoint(new fabric.Point(clientX - rect.left, clientY - rect.top), inv);
   };
 
   // True only if an image-space point lies within the slide's bounds — this is
   // what restricts annotation to the slide itself.
-  const isInImage = (pt) => {
+  const isInImage = (pt: FabricModule.Point | null): boolean => {
     const s = imgSizeRef.current;
-    return !!s && pt.x >= 0 && pt.y >= 0 && pt.x <= s.x && pt.y <= s.y;
+    return !!s && !!pt && pt.x >= 0 && pt.y >= 0 && pt.x <= s.x && pt.y <= s.y;
   };
 
   // Pointer-down on the drawing overlay: begins a shape/stroke (or erases) for
   // the active tool. Pointer Events cover mouse, touch (phone) and pen alike.
-  const handlePointerDown = (e) => {
+  const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     const canvas = fabricRef.current;
     if (!canvas || !canDraw) return;
     e.preventDefault();
@@ -472,14 +527,16 @@ const WsiViewer = forwardRef(({
     // The pointer and each mark's bounding box are both compared in IMAGE
     // (scene) coordinates, so it works at any zoom; the topmost mark wins.
     if (annotationTool === 'eraser') {
-      const eraseAt = (ev) => {
+      const eraseAt = (ev: { clientX: number; clientY: number }) => {
         const pt = toImagePoint(ev.clientX, ev.clientY);
+        if (!pt) return;
         const objs = canvas.getObjects();
         // Walk BACKWARDS: fabric keeps objects in paint order, so the last one
         // is the topmost on screen. Iterating in reverse means overlapping
         // marks are erased in the order the user sees them.
         for (let i = objs.length - 1; i >= 0; i--) {
           const o = objs[i];
+          if (!o) continue;                    // strict indexing: element is possibly undefined
           o.setCoords();                       // refresh fabric's cached corners
           const r = o.getBoundingRect();
           // A thick stroke is drawn centred on the shape's edge, so half of it
@@ -494,10 +551,10 @@ const WsiViewer = forwardRef(({
           }
         }
       };
-      eraseAt(e.nativeEvent || e);             // erase on the initial tap too, not only on drag
+      eraseAt(e.nativeEvent);                  // erase on the initial tap too, not only on drag
       // Listeners go on `window`, not the overlay: a fast drag can leave the
       // element mid-stroke, and we still need the move/up events.
-      const onMove = (ev) => eraseAt(ev);
+      const onMove = (ev: PointerEvent) => eraseAt(ev);
       const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); };
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
@@ -506,17 +563,21 @@ const WsiViewer = forwardRef(({
 
     // Drawing tools only act on the slide image itself.
     const start = toImagePoint(e.clientX, e.clientY);
-    if (!isInImage(start)) return;
-    const color = annotationColor;
+    // isInImage already rejects null, but TypeScript can't see that through the
+    // helper — this second check narrows `start` for everything below.
+    if (!start || !isInImage(start)) return;
+    const color = annotationColor ?? '#000000';
     // Stroke widths are in image px so they scale with zoom along with the
     // shape; divide by current scale so they appear ~3px (18px eraser) now.
     const scale = canvas.viewportTransform[0] || 1;
     const strokeW = 3 / scale;
 
     // Convert a move event to an image point, clamped to the slide's edges so a
-    // drag that wanders off the image doesn't draw outside it.
-    const clampMove = (ev) => {
+    // drag that wanders off the image doesn't draw outside it. Falls back to
+    // the press point if the canvas has gone away mid-drag.
+    const clampMove = (ev: PointerEvent): FabricModule.Point => {
       const p = toImagePoint(ev.clientX, ev.clientY);
+      if (!p) return start;
       const s = imgSizeRef.current;
       if (s) {
         p.x = Math.min(Math.max(p.x, 0), s.x);
@@ -539,7 +600,7 @@ const WsiViewer = forwardRef(({
       canvas.add(box);
       canvas.renderAll();
 
-      const onMove = (ev) => {
+      const onMove = (ev: PointerEvent) => {
         const p = clampMove(ev);
         // Re-anchor top-left to whichever side the cursor is on, and size from
         // the absolute distance — so dragging any direction keeps a clean box.
@@ -570,7 +631,7 @@ const WsiViewer = forwardRef(({
       canvas.add(oval);
       canvas.renderAll();
 
-      const onMove = (ev) => {
+      const onMove = (ev: PointerEvent) => {
         const p = clampMove(ev);
         oval.set({
           left: p.x >= start.x ? start.x : p.x,
@@ -588,9 +649,9 @@ const WsiViewer = forwardRef(({
     } else {
       // freehand: a path that grows point-by-point as you drag.
       let pathStr = `M ${start.x} ${start.y}`;
-      let pathObj = null;
+      let pathObj: FabricModule.Path | null = null;
 
-      const onMove = (ev) => {
+      const onMove = (ev: PointerEvent) => {
         const p = clampMove(ev);
         pathStr += ` L ${p.x} ${p.y}`;
         if (pathObj) canvas.remove(pathObj);   // replace with the longer path

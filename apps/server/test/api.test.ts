@@ -12,22 +12,39 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER = path.join(__dirname, '..', 'server.js');
+const SERVER = path.join(__dirname, '..', 'server.ts');
 const PORT = 3199;                       // deliberately not 3001, so a running dev server is untouched
 const BASE = `http://127.0.0.1:${PORT}`;
 
-let proc;
-let tmpDir;
+let proc: ChildProcess;
+let tmpDir: string;
 
-const api = async (pathname, { method = 'GET', body, token } = {}) => {
-  const headers = { 'Content-Type': 'application/json' };
+/**
+ * One request against the running test server.
+ *
+ * The response body is deliberately `any`: these tests assert against the raw
+ * JSON the API actually returns, and re-declaring every response shape here
+ * would test the declarations rather than the server.
+ */
+interface ApiOptions {
+  method?: string;
+  body?: unknown;
+  /** Bearer token; omitted for the unauthenticated endpoints. */
+  token?: string;
+}
+
+const api = async (
+  pathname: string,
+  { method = 'GET', body, token }: ApiOptions = {},
+): Promise<{ status: number; body: any }> => {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`${BASE}${pathname}`, {
     method, headers, body: body === undefined ? undefined : JSON.stringify(body),
@@ -37,15 +54,27 @@ const api = async (pathname, { method = 'GET', body, token } = {}) => {
   return { status: res.status, body: json };
 };
 
-const uniqueEmail = (p) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
+const uniqueEmail = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
 
 before(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-test-'));
+  // Which database the suite exercises:
+  //   default          → SQLite, in the throwaway directory below
+  //   TEST_DATABASE_URL → that PostgreSQL database instead
+  //
+  // DATABASE_URL is cleared explicitly and deliberately. apps/server/.env sets
+  // it for normal development, and dotenv would apply it here too — meaning
+  // these tests would create, archive and delete rows in the developer's REAL
+  // patient database. Opting in via a separate variable makes running against
+  // PostgreSQL a conscious act, and never the accidental default.
+  const testDatabaseUrl = process.env.TEST_DATABASE_URL || '';
+
   proc = spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
       PORT: String(PORT),
       TILE_PORT: '3299',
+      DATABASE_URL: testDatabaseUrl,
       // Point every piece of on-disk state at the throwaway directory.
       DB_FILE: path.join(tmpDir, 'test.db'),
       UPLOADS_DIR: path.join(tmpDir, 'uploads'),
@@ -55,8 +84,11 @@ before(async () => {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  proc.stdout.on('data', () => {});      // swallow: keeps test output readable
-  proc.stderr.on('data', () => {});
+  // Surface the child's output when PV_TEST_DEBUG=1 — otherwise a server that
+  // fails to boot just shows as a connection-refused with no explanation.
+  const debug = process.env.PV_TEST_DEBUG === '1';
+  proc.stdout?.on('data', (d: Buffer) => { if (debug) process.stdout.write(`[server] ${d}`); });
+  proc.stderr?.on('data', (d: Buffer) => { if (debug) process.stderr.write(`[server!] ${d}`); });
 
   // Wait for it to answer rather than guessing at a fixed sleep.
   for (let i = 0; i < 100; i++) {
@@ -168,7 +200,7 @@ test('archiving hides a case from the worklist and restoring brings it back', as
   const token = await makeAttendant();
   const { body: created } = await api('/api/cases', { method: 'POST', token, body: { patient: 'Archive Me' } });
 
-  const visible = async () => (await api('/api/cases')).body.some((c) => c.id === created.id);
+  const visible = async () => (await api('/api/cases')).body.some((c: any) => c.id === created.id);
   assert.equal(await visible(), true);
 
   await api(`/api/cases/${created.id}/archived`, { method: 'PATCH', token, body: { archived: true } });
@@ -252,8 +284,8 @@ test('?since= returns only cases changed after that moment', async () => {
   const after = (await api('/api/cases', { method: 'POST', token, body: { patient: 'After' } })).body;
   const changed = (await api(`/api/cases?since=${encodeURIComponent(watermark)}`)).body;
 
-  assert.ok(changed.some((c) => c.id === after.id), 'the newer case must be included');
-  assert.ok(changed.every((c) => c.updatedAt > watermark), 'nothing older should come back');
+  assert.ok(changed.some((c: any) => c.id === after.id), 'the newer case must be included');
+  assert.ok(changed.every((c: any) => c.updatedAt > watermark), 'nothing older should come back');
 });
 
 // --- Password reset ----------------------------------------------------------

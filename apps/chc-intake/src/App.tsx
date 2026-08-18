@@ -16,14 +16,19 @@ import ConsultantForm from './ConsultantForm';              // the consultant / 
 import FileUpload from './FileUpload';                       // the upload box on the right
 import Login from './Login';                                 // the sign-in / sign-up screen
 import { addCase, uploadSlide, isSlideFile, getMe, getToken, logout } from './api'; // backend + auth helpers
+import type { User, IntakeForm, Toast } from './types';
 
 // The starting (blank) value for every form field.
-const EMPTY = { chcId: '', name: '', abha: '', age: '', nikshay: '', gender: '', consultant: '', notes: '' };
+const EMPTY: IntakeForm = { chcId: '', name: '', abha: '', age: '', nikshay: '', gender: '', consultant: '', notes: '' };
 
 // Take the image file the user picked, shrink it to at most 2000 pixels wide/tall,
 // and turn it into a piece of text (a "data-URL") that can be stored and sent to
 // the server. Shrinking stops the saved image from being unnecessarily huge.
-function fileToDataURL(file, maxDim = 2000, quality = 0.9) {
+//
+// Only ever called for ORDINARY photos. Scanner slides skip this entirely —
+// browsers can't decode a .tiff in an <img>, and a gigapixel image would blow
+// past the canvas size limit anyway.
+function fileToDataURL(file: File, maxDim = 2000, quality = 0.9): Promise<string> {
   return new Promise((resolve, reject) => {     // a Promise = "I'll have the answer in a moment"
     const reader = new FileReader();            // a built-in browser tool that reads files
     reader.onerror = reject;
@@ -32,13 +37,18 @@ function fileToDataURL(file, maxDim = 2000, quality = 0.9) {
       img.onerror = reject;
       img.onload = () => {                       // once the picture is ready, resize it:
         const scale = Math.min(1, maxDim / Math.max(img.width, img.height)); // shrink factor (never enlarge)
-        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);          
+        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
         const c = document.createElement('canvas'); // a hidden drawing surface
         c.width = w; c.height = h;
-        c.getContext('2d').drawImage(img, 0, 0, w, h); // draw the picture at the smaller size
-        resolve(c.toDataURL('image/jpeg', quality));   // hand back the shrunk image as text
+        const ctx = c.getContext('2d');
+        // getContext returns null if the browser refuses a 2D context (out of
+        // memory, or a hostile environment) — reject rather than crash.
+        if (!ctx) { reject(new Error('Could not create a drawing canvas.')); return; }
+        ctx.drawImage(img, 0, 0, w, h);          // draw the picture at the smaller size
+        resolve(c.toDataURL('image/jpeg', quality)); // hand back the shrunk image as text
       };
-      img.src = reader.result;
+      // readAsDataURL always yields a string, but the type covers ArrayBuffer too.
+      img.src = typeof reader.result === 'string' ? reader.result : '';
     };
     reader.readAsDataURL(file);                 // start reading the chosen file
   });
@@ -46,7 +56,7 @@ function fileToDataURL(file, maxDim = 2000, quality = 0.9) {
 
 function App() {
   // --- Sign-in state ---
-  const [user, setUser] = useState(null);           // the signed-in lab attendant, or null
+  const [user, setUser] = useState<User | null>(null);    // the signed-in lab attendant, or null
   const [authChecking, setAuthChecking] = useState(true); // restoring the session on first load?
 
   // On first load, if we have a saved token, ask the server who we are so the
@@ -60,22 +70,25 @@ function App() {
   }, []);
 
   // --- "State": values the app remembers and re-draws the screen when they change ---
-  const [form, setForm] = useState(EMPTY);     // all the typed-in form fields
-  const [image, setImage] = useState(null);    // the chosen slide image (as text), or nothing yet
-  const [busy, setBusy] = useState(false);     // true while a submit is being sent
-  const [toast, setToast] = useState(null);    // the little success/error message, or none
+  const [form, setForm] = useState<IntakeForm>(EMPTY);        // all the typed-in form fields
+  const [image, setImage] = useState<string | null>(null);    // chosen photo as a data-URL, or none yet
+  const [busy, setBusy] = useState(false);                    // true while a submit is being sent
+  const [toast, setToast] = useState<Toast | null>(null);     // the success/error message, or none
   // A scanner slide (.tiff/.svs/...) is far too big to shrink in the browser
   // or send inline, so it is kept as the raw File here and uploaded separately
   // after the case is created. `uploadPct` drives the progress bar during that
   // upload — it can take minutes for a gigabyte-scale file.
-  const [slideFile, setSlideFile] = useState(null);
-  const [uploadPct, setUploadPct] = useState(null);
+  const [slideFile, setSlideFile] = useState<File | null>(null);
+  const [uploadPct, setUploadPct] = useState<number | null>(null);
 
   // Sign out: forget the token and drop back to the login screen.
   const handleLogout = () => { logout(); setUser(null); };
 
-  // Update one form field (e.g. "name") without disturbing the others.
-  const setField = (key, value) => setForm(f => ({ ...f, [key]: value }));
+  // Update one form field without disturbing the others. `keyof IntakeForm`
+  // means a typo like setField('nmae', …) is a compile error rather than
+  // silently writing a field nothing reads.
+  const setField = (key: keyof IntakeForm, value: string) =>
+    setForm((f) => ({ ...f, [key]: value }));
 
   // Runs when the user picks a file. Two very different paths:
   //   • A scanner slide (.tiff/.svs/...) — browsers can't decode these in an
@@ -83,7 +96,7 @@ function App() {
   //     we keep the raw File untouched and upload it separately on submit.
   //   • An ordinary photo (.png/.jpg) — unchanged from before: shrink it in
   //     the browser and send it inline with the case.
-  const handleFile = async (file) => {
+  const handleFile = async (file: File | undefined | null) => {
     if (!file) return;
     if (isSlideFile(file.name)) {
       setSlideFile(file);
@@ -149,7 +162,10 @@ function App() {
       });
     } catch (err) {
       // Show the server's message; if the session expired, drop back to login.
-      const msg = err?.message || 'Submit failed. Make sure the backend (apps/server) is running.';
+      // `catch` gives `unknown` under strict mode, so narrow before reading it.
+      const msg = err instanceof Error
+        ? err.message
+        : 'Submit failed. Make sure the backend (apps/server) is running.';
       setToast({ type: 'error', text: msg });
       if (/sign in|session/i.test(msg)) handleLogout();
     } finally {

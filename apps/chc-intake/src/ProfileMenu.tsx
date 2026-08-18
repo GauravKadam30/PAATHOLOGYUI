@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, UserCog, LogOut, Loader2, X, AlertCircle } from 'lucide-react';
 import { updateProfile } from './api';
+import type { User } from './types';
 
 /*
  * ProfileMenu.jsx — the clickable avatar in the top-right corner.
@@ -19,13 +20,17 @@ import { updateProfile } from './api';
 const initialsOf = (name = '') =>
   name.trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase() || 'U';
 
-export default function ProfileMenu({ user, onUpdated, onLogout }) {
+export default function ProfileMenu({ user, onUpdated, onLogout }: {
+  user: User;
+  onUpdated: (user: User) => void;
+  onLogout: () => void;
+}) {
   const [open, setOpen] = useState(false);              // is the little menu showing?
   const [showEdit, setShowEdit] = useState(false);      // is the edit dialog showing?
   const [showLogout, setShowLogout] = useState(false);  // is the log-out confirm showing?
   const [edit, setEdit] = useState({ fullName: user.fullName, chcName: user.chcName });
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Close the small menu and open the edit dialog, pre-filled with the current
   // name/CHC (in case a previous edit attempt was cancelled with stale text in it).
@@ -35,7 +40,7 @@ export default function ProfileMenu({ user, onUpdated, onLogout }) {
 
   // Sends the edited name/CHC to the backend; on success, tells App.jsx about
   // the new user object (via onUpdated) and closes the dialog.
-  const saveProfile = async (e) => {
+  const saveProfile = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
@@ -43,7 +48,7 @@ export default function ProfileMenu({ user, onUpdated, onLogout }) {
       onUpdated(updated);
       setShowEdit(false);
     } catch (err) {
-      setError(err.message || 'Could not update profile.');
+      setError(err instanceof Error ? err.message : 'Could not update profile.');
     } finally {
       setBusy(false);
     }

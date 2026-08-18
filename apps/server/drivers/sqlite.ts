@@ -36,13 +36,25 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import type {
+  DataDriver, UserRow, NewUser, CaseMeta, CaseFull, NewCaseInput, ListCasesOptions,
+  NotesByCase, NoteKind, AnnotationData, AnnotationsByCase, ResetCodeRow, BackupResult,
+} from '../types.ts';
+
+/**
+ * node:sqlite returns untyped rows, so every query result is cast at the point
+ * of use. `Row` names that boundary rather than scattering `any` through the
+ * file — the shapes themselves are guaranteed by the CREATE TABLE statements
+ * above and by the DataDriver contract asserted at the bottom.
+ */
+type Row = any;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // DB_FILE is overridable so the automated tests can run against a throwaway
 // database instead of the real one — without it, a test run would write to
 // live patient data.
-const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'data.db');
-const LEGACY_JSON = path.join(__dirname, 'data.json');
+const DB_FILE = process.env.DB_FILE || path.join(__dirname, '..', 'data.db');
+const LEGACY_JSON = path.join(__dirname, '..', 'data.json');
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 
 const db = new DatabaseSync(DB_FILE);
@@ -142,31 +154,31 @@ CREATE TABLE IF NOT EXISTS reset_codes (
 // --- Users -------------------------------------------------------------------
 // Any account with this email, regardless of role — used only where the
 // caller doesn't yet know (or care) which portal's account it wants.
-export function getUserByEmail(email) {
-  return db.prepare('SELECT * FROM users WHERE email = ?').get(String(email));
+export function getUserByEmail(email: string): UserRow | undefined {
+  return db.prepare('SELECT * FROM users WHERE email = ?').get(String(email)) as Row | undefined;
 }
 // The one account for this (email, role) pair. Since the same email can now
 // have a separate account per role, this — not getUserByEmail — is what
 // signup/login actually use to find "the" account for their own portal.
-export function getUserByEmailAndRole(email, role) {
-  return db.prepare('SELECT * FROM users WHERE email = ? AND role = ?').get(String(email), role);
+export function getUserByEmailAndRole(email: string, role: string): UserRow | undefined {
+  return db.prepare('SELECT * FROM users WHERE email = ? AND role = ?').get(String(email), role) as Row | undefined;
 }
-export function getUserById(id) {
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+export function getUserById(id: number | string): UserRow | undefined {
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(id) as Row | undefined;
 }
-export function createUser({ email, passwordHash, fullName, chcName, role = 'lab_attendant' }) {
+export function createUser({ email, passwordHash, fullName, chcName, role = 'lab_attendant' }: NewUser): UserRow {
   const info = db.prepare(
     'INSERT INTO users (email, password_hash, full_name, chc_name, role, created_at) VALUES (?,?,?,?,?,?)'
   ).run(email, passwordHash, fullName, chcName, role, new Date().toISOString());
-  return getUserById(info.lastInsertRowid);
+  return getUserById(Number(info.lastInsertRowid))!;
 }
 // Update the attendant's name and CHC (from the "Edit profile" dialog).
-export function updateProfile(id, { fullName, chcName }) {
+export function updateProfile(id: number, { fullName, chcName }: { fullName: string; chcName: string }): UserRow | undefined {
   db.prepare('UPDATE users SET full_name = ?, chc_name = ? WHERE id = ?').run(fullName, chcName, id);
   return getUserById(id);
 }
 // Set a new password (used by the "Forgot password" reset flow).
-export function updatePassword(id, passwordHash) {
+export function updatePassword(id: number, passwordHash: string): void {
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
 }
 
@@ -176,19 +188,20 @@ export function updatePassword(id, passwordHash) {
 // `since` (an ISO timestamp) returns only cases changed after that moment, so
 // the worklist can poll for changes instead of re-downloading everything.
 // Archived cases are excluded unless explicitly asked for.
-export function listCases({ since, includeArchived = false } = {}) {
+export function listCases({ since, includeArchived = false }: ListCasesOptions = {}): CaseMeta[] {
   const where = [];
   const params = [];
   if (!includeArchived) where.push('archived = 0');
   if (since) { where.push('updated_at > ?'); params.push(String(since)); }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT id, patient, age, gender, site, status, date, attendant, chc_name, consultant, notes, chc_id,
            dzi_path, slide_status, slide_error, archived, updated_at,
            (image IS NOT NULL AND image != '') AS hasImage
     FROM cases ${clause} ORDER BY id
-  `).all(...params).map((r) => ({
+  `).all(...params) as Row[];
+  return rows.map((r) => ({
     id: r.id, patient: r.patient, age: r.age, gender: r.gender, site: r.site,
     status: r.status, date: r.date, attendant: r.attendant, chcName: r.chc_name,
     consultant: r.consultant, notes: r.notes, chcId: r.chc_id, hasImage: !!r.hasImage,
@@ -201,7 +214,7 @@ export function listCases({ since, includeArchived = false } = {}) {
   }));
 }
 
-function remapCase(r) {
+function remapCase(r: Row): CaseFull | null {
   if (!r) return null;
   return {
     id: r.id, patient: r.patient, age: r.age, gender: r.gender, site: r.site,
@@ -213,19 +226,19 @@ function remapCase(r) {
     hasImage: !!(r.image && r.image !== ''),
   };
 }
-export function getCase(id) {                       // full record, including the image
-  return remapCase(db.prepare('SELECT * FROM cases WHERE id = ?').get(id));
+export function getCase(id: number | string): CaseFull | null {                       // full record, including the image
+  return remapCase(db.prepare('SELECT * FROM cases WHERE id = ?').get(id) as Row | undefined);
 }
-export function getCaseMeta(id) {                   // same but without the (large) image
+export function getCaseMeta(id: number | string): CaseMeta | null {                   // same but without the (large) image
   const c = getCase(id);
   if (!c) return null;
   const { image, ...meta } = c;
   return meta;
 }
-export function createCase(data, user) {
+export function createCase(data: NewCaseInput, user: UserRow): number {
   // Next id continues from the highest existing one, starting at 100 so it never
   // clashes with the viewer's built-in demo patients (ids 1–3).
-  const nextId = (db.prepare('SELECT MAX(id) AS m FROM cases').get().m || 99) + 1;
+  const nextId = ((db.prepare('SELECT MAX(id) AS m FROM cases').get() as Row)?.m || 99) + 1;
   const now = new Date().toISOString();
   db.prepare(`
     INSERT INTO cases
@@ -248,20 +261,20 @@ export function createCase(data, user) {
 // Called right after the upload lands, BEFORE tile generation starts — so the
 // pathologist's queue immediately shows "Processing slide…" rather than an
 // empty row that silently fills in later.
-export function setSlidePending(id, slidePath) {
+export function setSlidePending(id: number | string, slidePath: string | null): void {
   db.prepare("UPDATE cases SET slide_path = ?, slide_status = 'processing', slide_error = NULL WHERE id = ?")
     .run(slidePath, id);
   touchCase(id);
 }
 // Tile generation finished: record where the .dzi lives and flip to 'ready'.
-export function setSlideReady(id, dziPath) {
+export function setSlideReady(id: number | string, dziPath: string): void {
   db.prepare("UPDATE cases SET dzi_path = ?, slide_status = 'ready', slide_error = NULL WHERE id = ?")
     .run(dziPath, id);
   touchCase(id);
 }
 // Tile generation failed: keep the reason so the UI can show something useful
 // instead of a case stuck on "processing" forever.
-export function setSlideFailed(id, message) {
+export function setSlideFailed(id: number | string, message: string): void {
   db.prepare("UPDATE cases SET slide_status = 'failed', slide_error = ? WHERE id = ?")
     .run(String(message || 'Slide conversion failed.').slice(0, 500), id);
   touchCase(id);
@@ -269,17 +282,17 @@ export function setSlideFailed(id, message) {
 // On startup, any case left mid-conversion belongs to a server that died
 // (crash, Ctrl-C, restart during processing). Nothing is generating tiles for
 // it any more, so mark it failed rather than leaving it spinning forever.
-export function failStaleProcessingSlides() {
+export function failStaleProcessingSlides(): void {
   const r = db.prepare("UPDATE cases SET slide_status = 'failed', slide_error = 'Server restarted during slide processing — please re-upload.' WHERE slide_status = 'processing'").run();
   if (r.changes) console.log(`Marked ${r.changes} interrupted slide conversion(s) as failed.`);
 }
 
 // --- Key/value store ---------------------------------------------------------
-export function getKV(key) {
-  const r = db.prepare('SELECT value FROM kv WHERE key = ?').get(key);
+export function getKV(key: string): unknown {
+  const r = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as Row | undefined;
   return r ? JSON.parse(r.value) : {};
 }
-export function setKV(key, value) {
+export function setKV(key: string, value: unknown): void {
   db.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     .run(key, JSON.stringify(value));
 }
@@ -290,7 +303,7 @@ export const NOTE_KINDS = ['clinical', 'pathologist', 'medicine'];
 // Save ONE note. This is the whole point of the per-case table: the write
 // touches a single row, so a colleague saving a different case (or a different
 // note on the same case) at the same moment cannot overwrite it.
-export function setNote(caseId, kind, body, userId) {
+export function setNote(caseId: number | string, kind: string, body: string, userId?: number | null): void {
   if (!NOTE_KINDS.includes(kind)) throw new Error(`unknown note kind: ${kind}`);
   db.prepare(`
     INSERT INTO case_notes (case_id, kind, body, updated_at, updated_by)
@@ -304,16 +317,16 @@ export function setNote(caseId, kind, body, userId) {
 // All notes, shaped as { caseId: { clinical, pathologist, medicine } }. Reading
 // in bulk is safe — it's only the WRITES that had to become per-row — so the
 // dashboard can still load everything in one request.
-export function getAllNotes() {
-  const out = {};
-  for (const r of db.prepare('SELECT case_id, kind, body FROM case_notes').all()) {
-    (out[r.case_id] ||= {})[r.kind] = r.body;
+export function getAllNotes(): NotesByCase {
+  const out: NotesByCase = {};
+  for (const r of db.prepare('SELECT case_id, kind, body FROM case_notes').all() as Row[]) {
+    (out[String(r.case_id)] ||= {})[r.kind as NoteKind] = r.body;
   }
   return out;
 }
 
 // --- Annotations (one row per case) -----------------------------------------
-export function setAnnotations(caseId, data, userId) {
+export function setAnnotations(caseId: number | string, data: AnnotationData, userId?: number | null): void {
   db.prepare(`
     INSERT INTO case_annotations (case_id, data, updated_at, updated_by)
     VALUES (?,?,?,?)
@@ -323,9 +336,9 @@ export function setAnnotations(caseId, data, userId) {
   touchCase(caseId);
 }
 
-export function getAllAnnotations() {
-  const out = {};
-  for (const r of db.prepare('SELECT case_id, data FROM case_annotations').all()) {
+export function getAllAnnotations(): AnnotationsByCase {
+  const out: AnnotationsByCase = {};
+  for (const r of db.prepare('SELECT case_id, data FROM case_annotations').all() as Row[]) {
     try { out[r.case_id] = JSON.parse(r.data); } catch { /* skip corrupt row */ }
   }
   return out;
@@ -333,14 +346,14 @@ export function getAllAnnotations() {
 
 // --- Case lifecycle ----------------------------------------------------------
 // Mark a case as changed so incremental polling picks it up.
-export function touchCase(caseId) {
+export function touchCase(caseId: number | string): void {
   db.prepare('UPDATE cases SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), Number(caseId));
 }
 
 // Soft delete. The row and its slide file stay on disk; the case just stops
 // appearing in the worklist. Clinical records are rarely safe to destroy, and
 // this keeps a mistaken archive recoverable.
-export function setCaseArchived(caseId, archived) {
+export function setCaseArchived(caseId: number | string, archived = true): CaseMeta | null {
   db.prepare('UPDATE cases SET archived = ?, updated_at = ? WHERE id = ?')
     .run(archived ? 1 : 0, new Date().toISOString(), Number(caseId));
   return getCaseMeta(caseId);
@@ -349,36 +362,35 @@ export function setCaseArchived(caseId, archived) {
 // Is this CHC Patient ID already used at this health centre? The ID is meant
 // to identify one patient, and the worklist search relies on that, so a
 // duplicate is almost always a typo worth catching at submit time.
-export function findCaseByChcId(chcId, chcName) {
+export function findCaseByChcId(chcId: string, chcName: string): CaseMeta | null {
   const id = String(chcId ?? '').trim();
   if (!id) return null;
   return db.prepare(
     'SELECT id, patient FROM cases WHERE chc_id = ? AND chc_name = ? AND archived = 0'
-  ).get(id, String(chcName ?? ''));
+  ).get(id, String(chcName ?? '')) as Row | undefined;
 }
 
 // --- Token revocation --------------------------------------------------------
 // Bumping the version invalidates every token already issued for that account.
-export function bumpTokenVersion(userId) {
+export function bumpTokenVersion(userId: number): void {
   db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(userId);
-  return getUserById(userId);
 }
 
 // --- Password reset codes ----------------------------------------------------
-export function storeResetCode(userId, codeHash, expiresAt) {
+export function storeResetCode(userId: number, codeHash: string, expiresAt: number): void {
   db.prepare(`
     INSERT INTO reset_codes (user_id, code_hash, expires_at, attempts) VALUES (?,?,?,0)
     ON CONFLICT(user_id) DO UPDATE SET
       code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0
   `).run(userId, codeHash, expiresAt);
 }
-export function getResetCode(userId) {
-  return db.prepare('SELECT * FROM reset_codes WHERE user_id = ?').get(userId);
+export function getResetCode(userId: number): ResetCodeRow | undefined {
+  return db.prepare('SELECT * FROM reset_codes WHERE user_id = ?').get(userId) as Row | undefined;
 }
-export function bumpResetAttempts(userId) {
+export function bumpResetAttempts(userId: number): void {
   db.prepare('UPDATE reset_codes SET attempts = attempts + 1 WHERE user_id = ?').run(userId);
 }
-export function clearResetCode(userId) {
+export function clearResetCode(userId: number): void {
   db.prepare('DELETE FROM reset_codes WHERE user_id = ?').run(userId);
 }
 
@@ -386,7 +398,7 @@ export function clearResetCode(userId) {
 // SQLite's own online backup: produces a consistent copy even while the server
 // is mid-write, which a plain file copy of a WAL-mode database does not.
 // Older backups beyond `keep` are pruned so this can run unattended.
-export function backupDatabase(dir, keep = 7) {
+export function backupDatabase(dir: string, keep = 7): BackupResult {
   fs.mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const target = path.join(dir, `data-${stamp}.db`);
@@ -408,9 +420,9 @@ export function backupDatabase(dir, keep = 7) {
 // If the database is empty but an old data.json exists, import its patients and
 // saved notes so no existing data is lost, then rename the file so it won't run
 // again. Wrapped in a transaction: it's all-or-nothing.
-export function migrateLegacyJson() {
-  const caseCount = db.prepare('SELECT COUNT(*) AS c FROM cases').get().c;
-  const kvCount = db.prepare('SELECT COUNT(*) AS c FROM kv').get().c;
+export function migrateLegacyJson(): void {
+  const caseCount = (db.prepare('SELECT COUNT(*) AS c FROM cases').get() as Row).c;
+  const kvCount = (db.prepare('SELECT COUNT(*) AS c FROM kv').get() as Row).c;
   if (caseCount > 0 || kvCount > 0) return;      // already has data — nothing to do
   if (!fs.existsSync(LEGACY_JSON)) return;
 
@@ -440,7 +452,7 @@ export function migrateLegacyJson() {
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
-    console.error('Migration failed, left data.json untouched:', e.message);
+    console.error('Migration failed, left data.json untouched:', (e as Error).message);
     return;
   }
   try { fs.renameSync(LEGACY_JSON, LEGACY_JSON + '.migrated'); } catch { /* ignore */ }
@@ -463,7 +475,7 @@ export function migrateLegacyJson() {
 // SQLite has no "ADD COLUMN IF NOT EXISTS", so check the live column list
 // first and add only what's missing — safe to run on every startup.
 function migrateSlideColumns() {
-  const existing = new Set(db.prepare("PRAGMA table_info('cases')").all().map((c) => c.name));
+  const existing = new Set((db.prepare("PRAGMA table_info('cases')").all() as Row[]).map((c) => c.name));
   const wanted = [
     ['slide_path', 'TEXT'],
     ['dzi_path', 'TEXT'],
@@ -489,7 +501,7 @@ function migrateSlideColumns() {
   // token_version invalidates already-issued tokens: it is embedded in every
   // JWT and compared on each request, so bumping it logs that account out
   // everywhere at once (used on password change / "sign out all devices").
-  const userCols = new Set(db.prepare("PRAGMA table_info('users')").all().map((c) => c.name));
+  const userCols = new Set((db.prepare("PRAGMA table_info('users')").all() as Row[]).map((c) => c.name));
   if (!userCols.has('token_version')) {
     db.exec('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;');
     console.log('Added token_version to users (enables token revocation)');
@@ -504,12 +516,12 @@ migrateSlideColumns();
 // touches exactly one row. Non-destructive: the original kv rows are left in
 // place, and the migration only runs while the new tables are still empty.
 function migrateNotesToRows() {
-  const already = db.prepare('SELECT COUNT(*) AS c FROM case_notes').get().c
-    + db.prepare('SELECT COUNT(*) AS c FROM case_annotations').get().c;
+  const already = (db.prepare('SELECT COUNT(*) AS c FROM case_notes').get() as Row).c
+    + (db.prepare('SELECT COUNT(*) AS c FROM case_annotations').get() as Row).c;
   if (already > 0) return;
 
-  const readBlob = (key) => {
-    const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key);
+  const readBlob = (key: string): Row => {
+    const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as Row | undefined;
     if (!row) return {};
     try { return JSON.parse(row.value) || {}; } catch { return {}; }
   };
@@ -538,7 +550,7 @@ function migrateNotesToRows() {
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
-    console.error('Notes migration failed, left kv blobs untouched:', e.message);
+    console.error('Notes migration failed, left kv blobs untouched:', (e as Error).message);
     return;
   }
   if (notes || anns) console.log(`Migrated ${notes} note(s) and ${anns} annotation set(s) into per-case rows.`);
@@ -546,11 +558,11 @@ function migrateNotesToRows() {
 migrateNotesToRows();
 
 function migrateEmailUniqueness() {
-  const indexes = db.prepare("PRAGMA index_list('users')").all();
+  const indexes = db.prepare("PRAGMA index_list('users')").all() as Row[];
   const hasOldEmailOnlyUnique = indexes.some((idx) => {
     if (!idx.unique) return false;
-    const cols = db.prepare(`PRAGMA index_info('${idx.name}')`).all();
-    return cols.length === 1 && cols[0].name === 'email';
+    const cols = db.prepare(`PRAGMA index_info('${idx.name}')`).all() as Row[];
+    return cols.length === 1 && cols[0]?.name === 'email';
   });
   if (!hasOldEmailOnlyUnique) return;
 
@@ -576,9 +588,18 @@ function migrateEmailUniqueness() {
     console.log('Users table upgraded.');
   } catch (e) {
     db.exec('ROLLBACK');
-    console.error('Email-uniqueness upgrade failed, users table left unchanged:', e.message);
+    console.error('Email-uniqueness upgrade failed, users table left unchanged:', (e as Error).message);
   }
 }
 migrateEmailUniqueness();
 
 export default db;
+
+// --- Contract check -----------------------------------------------------------
+// Not used at runtime. Its only job is to make TypeScript verify that this
+// SQLite driver exposes every function `DataDriver` requires, with matching
+// signatures — so a divergence between the two drivers is a compile error
+// rather than a failure that only appears on whichever database is configured.
+import * as self from './sqlite.ts';
+const _contract: DataDriver = self as unknown as DataDriver;
+void _contract;

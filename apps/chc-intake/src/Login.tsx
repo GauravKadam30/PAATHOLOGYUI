@@ -4,6 +4,8 @@ import {
   ShieldCheck, Images, RefreshCw,
 } from 'lucide-react';
 import { login, signup, requestReset, resetPassword } from './api';
+import type { FormEvent } from 'react';
+import type { User } from './types';
 
 /*
  * Login.jsx — the sign-in / sign-up / reset screen shown before the intake form.
@@ -34,22 +36,38 @@ import { login, signup, requestReset, resetPassword } from './api';
  * On a successful login/signup it calls onAuth(user); App.jsx then swaps in
  * the intake screen.
  */
-export default function Login({ onAuth }) {
-  const [mode, setMode] = useState('login');            // 'login' | 'signup' | 'reset'
-  const [form, setForm] = useState({ fullName: '', chcName: '', email: '', password: '', newPassword: '', code: '' });
+type Mode = 'login' | 'signup' | 'reset';
+
+/** Every field this form can collect, across all three modes. */
+interface LoginForm {
+  fullName: string;
+  chcName: string;
+  email: string;
+  password: string;
+  newPassword: string;
+  code: string;
+}
+
+export default function Login({ onAuth }: { onAuth: (user: User) => void }) {
+  const [mode, setMode] = useState<Mode>('login');
+  const [form, setForm] = useState<LoginForm>({
+    fullName: '', chcName: '', email: '', password: '', newPassword: '', code: '',
+  });
   // Reset is now two steps: request a code, then use it. `codeSent` says
   // which of the two the form is currently showing.
   const [codeSent, setCodeSent] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const [notice, setNotice] = useState(null);           // green success message (after a reset)
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);   // green success message
+  // `keyof LoginForm` means a typo like set('emial', …) is a compile error
+  // rather than silently writing a field nothing ever reads.
+  const set = (k: keyof LoginForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const isSignup = mode === 'signup';
   const isReset = mode === 'reset';
-  const go = (m) => { setMode(m); setError(null); setNotice(null); setCodeSent(false); };  // switch mode, clear state
+  const go = (m: Mode) => { setMode(m); setError(null); setNotice(null); setCodeSent(false); };  // switch mode, clear state
 
-  const submit = async (e) => {
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null); setNotice(null); setBusy(true);
     try {
@@ -77,7 +95,7 @@ export default function Login({ onAuth }) {
         onAuth(await login({ email: form.email, password: form.password }));
       }
     } catch (err) {
-      setError(err.message || 'Something went wrong. Please try again.');
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {
       setBusy(false);
     }

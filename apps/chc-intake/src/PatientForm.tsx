@@ -1,4 +1,5 @@
 import { ClipboardList } from 'lucide-react';   // a "clipboard" icon for the card title
+import type { FormCardProps } from './ConsultantForm';
 
 /*
  * PatientForm.jsx — the card on the left containing all the patient detail boxes
@@ -19,7 +20,13 @@ const labelCls = "block text-[10px] font-bold text-slate-500 uppercase tracking-
 
 // A small reusable "label + box" wrapper. `span={2}` stretches across both
 // columns; `required` shows a red asterisk on the label.
-function Field({ label, span = 1, required = false, children }) {
+function Field({ label, span = 1, required = false, children }: {
+  label: string;
+  /** 2 makes the field span both columns. */
+  span?: 1 | 2;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <div className={span === 2 ? 'sm:col-span-2' : ''}>
       <label className={labelCls}>
@@ -33,7 +40,7 @@ function Field({ label, span = 1, required = false, children }) {
 // The form card. `form` = the current values; `setField` = update one of them.
 // `h-full` lets it stretch to match its neighbours' height (Consultant / FNAC
 // Slide Image), so all three cards fill the available window space evenly.
-export default function PatientForm({ form, setField }) {
+export default function PatientForm({ form, setField }: FormCardProps) {
   return (
     <section className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 sm:p-6 h-full">
       {/* Card title with an icon badge */}

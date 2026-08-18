@@ -1,0 +1,38 @@
+{
+  // TypeScript config for the backend.
+  //
+  // The server RUNS as JavaScript — Node executes the .ts files directly via
+  // tsx, and `npm run typecheck` is what enforces the types. That keeps the
+  // start command unchanged and avoids a build step for a project that is
+  // launched with `npm run dev`.
+  //
+  // `strict` matters most here for the driver layer: two implementations
+  // (SQLite and PostgreSQL) must expose the same functions with the same
+  // return shapes, and only a shared typed interface can actually enforce it.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "skipLibCheck": true,
+
+    /* Strictness */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+
+    /* Express handlers frequently ignore `next`; allow that without noise. */
+    "noImplicitOverride": true
+  },
+  "include": ["*.ts", "drivers/*.ts", "test/*.ts", "types.ts"],
+  "exclude": ["node_modules", "uploads", "backups", "tools"]
+}

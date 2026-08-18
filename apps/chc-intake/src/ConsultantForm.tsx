@@ -1,4 +1,5 @@
 import { Stethoscope } from 'lucide-react';   // a "stethoscope" icon for the card title
+import type { IntakeForm } from './types';
 
 /*
  * ConsultantForm.jsx — the "Consultant" card ("Pro Workstation" styling).
@@ -16,7 +17,13 @@ const labelCls = 'block text-[10px] font-bold text-slate-500 uppercase tracking-
 // `h-full flex flex-col` matches PatientForm/FileUpload so all three cards
 // share the same height; the OPD notes box then grows (`flex-1`) to fill
 // whatever extra vertical space that leaves, instead of staying a fixed size.
-export default function ConsultantForm({ form, setField }) {
+/** Both form cards take the same two props: the values, and a setter. */
+export interface FormCardProps {
+  form: IntakeForm;
+  setField: (key: keyof IntakeForm, value: string) => void;
+}
+
+export default function ConsultantForm({ form, setField }: FormCardProps) {
   return (
     <section className="bg-white rounded-2xl border border-gray-200 shadow-sm p-5 sm:p-6 h-full flex flex-col">
       {/* Card title with an icon badge */}

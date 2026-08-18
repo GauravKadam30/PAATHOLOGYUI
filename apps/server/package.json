@@ -3,17 +3,30 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Shared backend for the Telepathology Console — stores notes & annotated images so they sync across machines.",
+  "description": "Shared backend for the Telepathology Console \u2014 stores notes & annotated images so they sync across machines.",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "test": "node --test"
+    "start": "tsx server.ts",
+    "dev": "tsx server.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
     "express": "^4.21.2",
     "multer": "^2.2.0",
-    "nodemailer": "^9.0.4"
+    "nodemailer": "^9.0.4",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
   }
 }

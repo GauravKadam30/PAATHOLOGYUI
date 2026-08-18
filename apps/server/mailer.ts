@@ -22,7 +22,7 @@ export const isMailConfigured = !!(SMTP_HOST && SMTP_USER && SMTP_PASS);
 
 // Built once, lazily, so importing this module never touches the network —
 // only actually sending (or verifying) a message does.
-let transporter = null;
+let transporter: nodemailer.Transporter | null = null;
 function getTransporter() {
   if (!isMailConfigured) return null;
   if (!transporter) {
@@ -47,10 +47,10 @@ function getTransporter() {
 export async function verifyMailer() {
   if (!isMailConfigured) return { ok: false, configured: false };
   try {
-    await getTransporter().verify();
+    await getTransporter()!.verify();
     return { ok: true, configured: true };
   } catch (e) {
-    return { ok: false, configured: true, error: e.message };
+    return { ok: false, configured: true, error: (e as Error).message };
   }
 }
 
@@ -58,7 +58,18 @@ export async function verifyMailer() {
 // throws rather than silently no-op'ing, so a mistake (calling it when
 // unconfigured) is loud in a log rather than a support ticket about a code
 // that "never arrived".
-export async function sendResetCodeEmail({ to, code, expiresInMinutes, portalName }) {
+export interface ResetCodeEmail {
+  /** Recipient address. */
+  to: string;
+  /** The six-digit code the user must type back in. */
+  code: string;
+  /** How long the code stays valid, stated in the message body. */
+  expiresInMinutes: number;
+  /** "CHC Intake" or "Telepathology Console" — names the portal in the subject. */
+  portalName: string;
+}
+
+export async function sendResetCodeEmail({ to, code, expiresInMinutes, portalName }: ResetCodeEmail) {
   if (!isMailConfigured) throw new Error('sendResetCodeEmail called but SMTP is not configured');
 
   const subject = `Your ${portalName} password reset code`;
@@ -83,7 +94,7 @@ export async function sendResetCodeEmail({ to, code, expiresInMinutes, portalNam
       </p>
     </div>`;
 
-  const info = await getTransporter().sendMail({
+  const info = await getTransporter()!.sendMail({
     from: MAIL_FROM || SMTP_USER,
     to,
     subject,

@@ -1,8 +1,9 @@
 import { useRef, useState, useEffect } from 'react';
 import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2, CheckCircle2, Layers } from 'lucide-react'; // icons
+import type { FileInfo } from './types';
 
 // Turn a byte count into a short, friendly size like "820 KB", "2.4 MB" or "1.2 GB".
-const formatSize = (bytes) => {
+const formatSize = (bytes: number): string => {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
@@ -26,10 +27,20 @@ const formatSize = (bytes) => {
  *   onSubmit  — function to call when the Submit button is pressed
  *   busy      — true while submitting (used to disable the button)
  */
-export default function FileUpload({ image, slideFile, uploadPct, onFile, onSubmit, busy }) {
+export default function FileUpload({ image, slideFile, uploadPct, onFile, onSubmit, busy }: {
+  /** A shrunk photo as a data-URL, or null. */
+  image: string | null;
+  /** A scanner slide kept as a raw File — too big to preview or inline. */
+  slideFile: File | null;
+  /** 0-100 while a slide uploads, else null. */
+  uploadPct: number | null;
+  onFile: (file: File | undefined | null) => void;
+  onSubmit: () => void;
+  busy: boolean;
+}) {
   // A "ref" is a handle to a hidden element on the page. We use it to click the
   // (invisible) file picker from our own nicer-looking upload box below.
-  const inputRef = useRef(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // True only while a file is being dragged over the box, so we can light it up
   // (indigo border) to show "yes, you can drop here".
@@ -38,7 +49,7 @@ export default function FileUpload({ image, slideFile, uploadPct, onFile, onSubm
   // Remembers the chosen file's name and size, so the box can show WHICH file is
   // selected (not just the preview below). Cleared automatically if the image is
   // removed (e.g. after the form is submitted) — see the effect below.
-  const [fileInfo, setFileInfo] = useState(null);
+  const [fileInfo, setFileInfo] = useState<FileInfo | null>(null);
   useEffect(() => { if (!image && !slideFile) setFileInfo(null); }, [image, slideFile]);
 
   // "Something is selected" now means EITHER a shrunk photo or a scanner slide.
@@ -46,7 +57,7 @@ export default function FileUpload({ image, slideFile, uploadPct, onFile, onSubm
 
   // One place that handles a chosen file, whether it came from the picker or a
   // drag-and-drop: remember its name/size, then hand it to App like before.
-  const pick = (file) => {
+  const pick = (file: File | undefined | null) => {
     if (!file) return;
     setFileInfo({ name: file.name, size: file.size });
     onFile(file);
@@ -55,7 +66,7 @@ export default function FileUpload({ image, slideFile, uploadPct, onFile, onSubm
   // Runs when the user releases a dragged file over the box. We stop the browser
   // from just opening the image in a new tab (its default), then hand the dropped
   // file to App exactly like the file picker does.
-  const handleDrop = (e) => {
+  const handleDrop = (e: React.DragEvent<HTMLButtonElement>) => {
     e.preventDefault();
     setDragActive(false);
     pick(e.dataTransfer.files?.[0]);   // the first file that was dropped

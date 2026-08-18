@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import type { FormEvent } from 'react';
 import { Microscope, LogIn, UserPlus, Loader2, AlertCircle } from 'lucide-react';
 import { login, signup } from './api';
+import type { User } from './types';
 
 /*
- * Login.jsx — the sign-in / sign-up screen shown before the console loads.
+ * Login.tsx — the sign-in / sign-up screen shown before the console loads.
  *
  * Styled to match the rest of the Pathology Console ("Pro Workstation" dark
  * navy + indigo theme), rather than reusing the CHC intake app's light
@@ -14,25 +16,45 @@ import { login, signup } from './api';
  * (no CHC field, no "forgot password" flow). Two modes toggled at the bottom:
  *   • 'login'  — email + password.
  *   • 'signup' — also asks the pathologist's name.
- * On success it calls onAuth(user); App.jsx then swaps in the dashboard.
+ * On success it calls onAuth(user); App.tsx then swaps in the dashboard.
  */
-export default function Login({ onAuth }) {
-  const [mode, setMode] = useState('login');        // 'login' | 'signup'
-  const [form, setForm] = useState({ fullName: '', email: '', password: '' });
+
+type Mode = 'login' | 'signup';
+
+/** The three fields this form can collect. `fullName` is signup-only. */
+interface LoginForm {
+  fullName: string;
+  email: string;
+  password: string;
+}
+
+interface LoginProps {
+  /** Called with the signed-in account once auth succeeds. */
+  onAuth: (user: User) => void;
+}
+
+export default function Login({ onAuth }: LoginProps) {
+  const [mode, setMode] = useState<Mode>('login');
+  const [form, setForm] = useState<LoginForm>({ fullName: '', email: '', password: '' });
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const [error, setError] = useState<string | null>(null);
+
+  // `keyof LoginForm` means a typo like set('emial', …) is a compile error
+  // rather than silently writing a field nothing ever reads.
+  const set = (k: keyof LoginForm, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
   const isSignup = mode === 'signup';
-  const go = (m) => { setMode(m); setError(null); };   // switch mode, clear any error
+  const go = (m: Mode) => { setMode(m); setError(null); };   // switch mode, clear any error
 
-  const submit = async (e) => {
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null); setBusy(true);
     try {
       onAuth(isSignup ? await signup(form) : await login({ email: form.email, password: form.password }));
     } catch (err) {
-      setError(err.message || 'Something went wrong. Please try again.');
+      // `catch` gives `unknown` under strict mode — narrow before reading
+      // .message, since a thrown non-Error would otherwise crash the handler.
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
     } finally {
       setBusy(false);
     }

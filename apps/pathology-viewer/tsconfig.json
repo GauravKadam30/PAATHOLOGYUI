@@ -1,0 +1,35 @@
+{
+  // TypeScript config for the pathology console.
+  //
+  // `strict: true` is the whole point of adopting TypeScript here: it forces
+  // every value that could be null/undefined to be handled explicitly. In a
+  // clinical app that is exactly the class of bug worth catching — a missing
+  // patient ID or an unloaded slide should be a compile error, not a blank
+  // field discovered by a pathologist mid-review.
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode — Vite compiles the TypeScript, so tsc only type-checks. */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Strictness */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    /* Indexing into an object/array can yield undefined — surfacing that is
+       precisely what stops `cases[id]` silently becoming undefined. */
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src"]
+}

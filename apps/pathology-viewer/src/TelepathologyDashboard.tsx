@@ -36,7 +36,8 @@
  * Theme: dark navy navigation rail + indigo accent, with clinical figures
  * (IDs, ages, dates) in a monospaced font.
  */
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 // Icons used across the UI (tree-shaken from the lucide icon set).
 import {
   Clock, Pencil, PencilOff, Square, Circle, Eraser, ArrowLeft, FileText, Download,
@@ -49,11 +50,16 @@ import {
 // is needed to show the patient worklist, which is the first thing everyone
 // sees. Splitting them out means the queue paints without waiting for them.
 const WsiViewer = React.lazy(() => import('./WsiViewer'));
+import type { WsiViewerHandle } from './WsiViewer';
 import { resolveImageUrl, renderAnnotatedImage, hasAnnotations } from './annotations';
+// All server state lives in queries.ts as TanStack Query hooks — see that file
+// for why reads are bulk but writes are per-case.
 import {
-  apiGet, getCases, getCaseImage,
-  getAllNotes, getAllAnnotations, saveNote, saveAnnotations, setCaseArchived,
-} from './api';
+  useCases, useNotes, useAnnotations, useLegacyAnnotatedImages,
+  useSaveNote, useSaveAnnotations, useArchiveCase, useLoadCaseImage,
+} from './queries';
+import type { User, Case, CaseStatus, Modal, NoteKind, AnnotationData } from './types';
+import type { LucideIcon } from 'lucide-react';
 
 // The annotation colour palette shown in the slide toolbar (label + CSS hex).
 const COLORS = [
@@ -79,7 +85,7 @@ const TOOLS = [
 // The built-in demo patients. Kept outside the component for stable identity.
 // Patients submitted from the CHC intake app are fetched from the backend and
 // appended to these at runtime (see `cases` inside the component).
-const BASE_CASES = [
+const BASE_CASES: Case[] = [
   { id: 1, patient: 'Patient A', age: 45, gender: 'F', site: 'Lymph Node', status: 'Pending', date: '2026-05-23', image: 'IMG-20260525-WA0002.jpg' },
   { id: 2, patient: 'Patient B', age: 62, gender: 'M', site: 'Lymph Node', status: 'Pending', date: '2026-05-23', image: 'IMG-20260525-WA0003.jpg' },
   { id: 3, patient: 'Patient C', age: 29, gender: 'F', site: 'Lymph Node', status: 'Pending', date: '2026-05-22', image: 'IMG-20260525-WA0005.jpg' },
@@ -93,7 +99,8 @@ const AVATAR_TINTS = [
   'bg-teal-50 text-teal-600',
 ];
 // "Patient A" -> "PA": first letter of each word, for the avatar circle.
-const initialsOf = (name) => name.split(' ').map(w => w[0]).join('').toUpperCase();
+const initialsOf = (name: string): string =>
+  name.split(' ').map((w) => w[0] ?? '').join('').toUpperCase();
 
 // The worklist's own unique patient identifier — shown under the name and
 // matched by the search box. Names alone aren't unique (several patients can
@@ -104,19 +111,11 @@ const initialsOf = (name) => name.split(' ').map(w => w[0]).join('').toUpperCase
 // on the Reports page. The built-in demo patients were never submitted
 // through intake, so they have none — shown as a muted dash, same as the
 // Lab Attendant / CHC columns.
-const patientIdLabel = (c) => c.chcId ? `CHC ID: ${c.chcId}` : '—';
+const patientIdLabel = (c: Case): string => (c.chcId ? `CHC ID: ${c.chcId}` : '—');
 
-// Local browser cache. The shared backend (see ./api) is the source of truth
-// across machines; this cache makes the UI instant and keeps things working
-// when the backend is offline.
-const loadLS = (key) => {
-  try { return JSON.parse(localStorage.getItem(key)) || {}; }
-  catch { return {}; }
-};
-const saveLS = (key, value) => {
-  try { localStorage.setItem(key, JSON.stringify(value)); }
-  catch { /* quota exceeded (large images) — keep in memory for this session */ }
-};
+// Note: the localStorage helpers that used to live here are gone. TanStack
+// Query now owns caching (see queries.ts), so mirroring server data into
+// localStorage by hand would just be a second, staler copy of the same thing.
 
 // The dark navigation rail — now shown on ALL THREE pages (queue, slide
 // viewer, details), so once a patient is open you can still jump straight to
@@ -135,7 +134,20 @@ const RAIL_NAV = [
 // at the top of the open rail collapses it (`onToggle`); when collapsed, the
 // same logo reappears alone in a slim strip (see RailCollapsed below) and
 // clicking it there reopens the full rail. Only one logo is ever on screen.
-const Rail = ({ active, count, onNav, disabled, onToggle, user, onLogout }) => (
+interface RailProps {
+  /** Which nav item to highlight. */
+  active: 'queue' | 'slides' | 'reports';
+  /** Badge count beside "Patient List". */
+  count?: number;
+  onNav?: (id: string) => void;
+  /** True while drawing — navigation is blocked so marks can't be lost. */
+  disabled?: boolean;
+  onToggle: () => void;
+  user?: User;
+  onLogout?: () => void;
+}
+
+const Rail = ({ active, count, onNav, disabled, onToggle, user, onLogout }: RailProps) => (
   <div className="w-[210px] shrink-0 rail-dark border-r border-slate-800 flex flex-col gap-6 px-4 py-5">
     <button onClick={onToggle} title="Hide sidebar" className="flex items-center gap-2.5 px-1.5 self-start hover:opacity-80 transition-opacity">
       <div className="w-9 h-9 rounded-[10px] bg-indigo-600 flex items-center justify-center shrink-0">
@@ -196,7 +208,7 @@ const Rail = ({ active, count, onNav, disabled, onToggle, user, onLogout }) => (
 // The collapsed state: a slim strip holding just the same brand mark, so
 // there's still exactly one logo on screen (not zero, not two) once the full
 // rail is hidden. Clicking it brings the full rail back.
-const RailCollapsed = ({ onToggle }) => (
+const RailCollapsed = ({ onToggle }: { onToggle: () => void }) => (
   <div className="w-[64px] shrink-0 rail-dark border-r border-slate-800 flex flex-col items-center py-5">
     <button
       onClick={onToggle}
@@ -211,7 +223,14 @@ const RailCollapsed = ({ onToggle }) => (
 // A white card with an icon-badge header, used for each section on the details
 // page. `children` is the card body. (Destructuring `icon: Icon` lets us use it
 // as a JSX component, which must be capitalised.)
-const SectionCard = ({ icon: Icon, title, children }) => (
+interface SectionCardProps {
+  /** Any lucide icon — they all share this props shape. */
+  icon: LucideIcon;
+  title: string;
+  children: React.ReactNode;
+}
+
+const SectionCard = ({ icon: Icon, title, children }: SectionCardProps) => (
   // `h-full flex flex-col` lets the card fill its grid cell so cards sitting in
   // the same row share one height (no ragged, scattered edges). The body wrapper
   // flexes, so a textarea inside can grow and pin its buttons to the card bottom.
@@ -227,7 +246,7 @@ const SectionCard = ({ icon: Icon, title, children }) => (
 );
 
 // The little status badge: amber "Pending" or green "Reported".
-const StatusPill = ({ status }) => (
+const StatusPill = ({ status }: { status: CaseStatus }) => (
   status === 'Pending' ? (
     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 ring-1 ring-amber-200">
       <Clock className="w-3 h-3" /> Pending
@@ -239,13 +258,25 @@ const StatusPill = ({ status }) => (
   )
 );
 
-const TelepathologyDashboard = ({ user, onLogout }) => {
-  // Three-page flow (all screen sizes):
-  // 'queue'   — FNAC patient list
-  // 'slide'   — the whole-slide image viewer with annotation tools
-  // 'details' — prescription / clinical information
-  const [page, setPage] = useState('queue');
-  const [activeCase, setActiveCase] = useState(1);
+/** Which of the three views this instance is rendering. */
+export type DashboardView = 'queue' | 'slide' | 'details';
+
+interface DashboardProps {
+  user: User;
+  onLogout: () => void;
+  /** Chosen by the route, not by internal state — see App.tsx. */
+  view: DashboardView;
+  /** The :caseId from the URL. Absent on the queue route. */
+  caseId?: number;
+}
+
+const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps) => {
+  // Navigation is now the URL's job, not a state variable. `page` used to hold
+  // 'queue' | 'slide' | 'details'; it's replaced by the `view` prop, which the
+  // router derives from the address. That is what makes a case linkable and
+  // the browser Back button work.
+  const navigate = useNavigate();
+  const page = view;
   const [isDrawing, setIsDrawing] = useState(false);
   // Whether the dark navigation rail is shown. A toggle button on every page
   // flips this, so a pathologist can reclaim the rail's width for the slide
@@ -259,203 +290,122 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
   // above it — the toggle button still overrides this manually at any size.
   useEffect(() => {
     const mq = window.matchMedia('(min-width: 1024px)');
-    const applyToViewport = (e) => setRailOpen(e.matches);
+    const applyToViewport = (e: MediaQueryListEvent) => setRailOpen(e.matches);
     mq.addEventListener('change', applyToViewport);
     return () => mq.removeEventListener('change', applyToViewport);
   }, []);
-  // Queue worklist controls: free-text search (matches patient name or
-  // specimen site) and a status filter tab. Both are plain client-side
-  // filters over the in-memory case list — no extra request needed.
+  // Queue worklist controls: free-text search (matches patient name, specimen
+  // site or CHC patient ID) and a status filter tab. Both are plain
+  // client-side filters over the loaded case list — no extra request needed.
   const [queueSearch, setQueueSearch] = useState('');
-  const [queueStatusFilter, setQueueStatusFilter] = useState('All');
+  const [queueStatusFilter, setQueueStatusFilter] = useState<'All' | 'Pending' | 'Reported'>('All');
   // Both start null when annotation mode is enabled: the user must pick a
   // color and a tool every session before they can draw.
-  const [annotationColor, setAnnotationColor] = useState(null);
-  const [annotationTool, setAnnotationTool] = useState(null);
+  const [annotationColor, setAnnotationColor] = useState<string | null>(null);
+  const [annotationTool, setAnnotationTool] = useState<string | null>(null);
   const [showSaveModal, setShowSaveModal] = useState(false);
 
-  // Per-patient clinical text, keyed by case id. Drafts live here as the user
-  // types and are cleared on save; the "saved" copies persist (and are what
-  // other sections / machines read back).
-  const [clinicalDraft, setClinicalDraft] = useState({});
-  const [clinicalSaved, setClinicalSaved] = useState(() => loadLS('pv_clinicalSaved'));
-  const [pathologistDraft, setPathologistDraft] = useState({});
-  const [pathologistSaved, setPathologistSaved] = useState(() => loadLS('pv_pathologistSaved'));
-  const [medicineDraft, setMedicineDraft] = useState({});
-  const [medicineSaved, setMedicineSaved] = useState(() => loadLS('pv_medicineSaved'));
-  // Per-patient annotations, stored as VECTOR SHAPES (fabric JSON in image
-  // coordinates) — a few KB each. They used to be saved as a flattened PNG of
-  // the whole slide, which ran to ~16 MB per case inside SQLite, couldn't be
-  // edited afterwards, and had to be downscaled to 4096px to composite at all.
-  // See annotations.js for the full reasoning.
-  const [annotations, setAnnotations] = useState(() => loadLS('pv_annotations'));
-  // Read-only fallback: annotations saved by the OLD flattened-image scheme.
-  // Nothing writes to this any more, but keeping it means work saved before
-  // the change still displays instead of silently vanishing.
-  const [legacyAnnotatedImages, setLegacyAnnotatedImages] = useState(() => loadLS('pv_annotatedImages'));
+  // --- Server state, via TanStack Query (see queries.ts) ---------------------
+  // These four replace what used to be a tangle of useState + useEffect +
+  // setInterval inside this component: fetching, polling, caching and merging
+  // are all handled there now.
+  const casesQuery = useCases();
+  const notesQuery = useNotes();
+  const annotationsQuery = useAnnotations();
+  const legacyImagesQuery = useLegacyAnnotatedImages();
+
+  const saveNoteMutation = useSaveNote();
+  const saveAnnotationsMutation = useSaveAnnotations();
+  const archiveMutation = useArchiveCase();
+  const loadCaseImage = useLoadCaseImage();
+
+  const intakeCases = useMemo(() => casesQuery.data ?? [], [casesQuery.data]);
+  const loadingCases = casesQuery.isLoading;
+  const notesByCase = notesQuery.data ?? {};
+  const annotations = annotationsQuery.data ?? {};
+  const legacyAnnotatedImages = legacyImagesQuery.data ?? {};
+
+  // Per-patient DRAFT text, held here while the user types. Only the saved
+  // copies live on the server; a draft is local until its Save button is hit.
+  const [clinicalDraft, setClinicalDraft] = useState<Record<string, string>>({});
+  const [pathologistDraft, setPathologistDraft] = useState<Record<string, string>>({});
+  const [medicineDraft, setMedicineDraft] = useState<Record<string, string>>({});
+
   const [showAnnotations, setShowAnnotations] = useState(true);  // slide-page toggle
-  const [savedFlash, setSavedFlash] = useState(null);   // which Save button just fired
-  const [modal, setModal] = useState(null);             // viewer overlay {type,title,...}
+  const [savedFlash, setSavedFlash] = useState<string | null>(null);   // which Save button just fired
+  const [modal, setModal] = useState<Modal | null>(null);              // viewer overlay
   // The case awaiting delete confirmation, or null. Removing a patient is
   // destructive enough to always ask first.
-  const [confirmDelete, setConfirmDelete] = useState(null);
-  const [deleting, setDeleting] = useState(false);
-  const [intakeCases, setIntakeCases] = useState([]);   // patients submitted from the CHC intake app
-  const [loadingCases, setLoadingCases] = useState(true); // initial fetch of intake patients in flight
+  const [confirmDelete, setConfirmDelete] = useState<Case | null>(null);
+  const deleting = archiveMutation.isPending;
 
-  // Mirror saved values into the local cache whenever they change.
-  useEffect(() => { saveLS('pv_clinicalSaved', clinicalSaved); }, [clinicalSaved]);
-  useEffect(() => { saveLS('pv_pathologistSaved', pathologistSaved); }, [pathologistSaved]);
-  useEffect(() => { saveLS('pv_medicineSaved', medicineSaved); }, [medicineSaved]);
-  useEffect(() => { saveLS('pv_annotations', annotations); }, [annotations]);
-
-  // On load, pull the latest data from the shared backend so notes and
-  // annotations saved on ANOTHER machine appear here too. If the backend is
-  // offline we silently keep the local cache the state was seeded with.
-  // Notes now come from per-case rows (see /api/notes) rather than one blob
-  // per kind; the shape handed to the UI is unchanged.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [notes, anns, legacy] = await Promise.all([
-          getAllNotes(),
-          getAllAnnotations(),
-          apiGet('pv_annotatedImages'),   // old flattened images, read-only
-        ]);
-        if (cancelled) return;
-        // { caseId: { clinical, pathologist, medicine } } -> one map per kind,
-        // which is what the three text areas already expect.
-        const byKind = { clinical: {}, pathologist: {}, medicine: {} };
-        for (const [caseId, kinds] of Object.entries(notes || {})) {
-          for (const [kind, body] of Object.entries(kinds || {})) {
-            if (byKind[kind]) byKind[kind][caseId] = body;
-          }
-        }
-        setClinicalSaved(byKind.clinical);
-        setPathologistSaved(byKind.pathologist);
-        setMedicineSaved(byKind.medicine);
-        setAnnotations(anns || {});
-        setLegacyAnnotatedImages(legacy);
-      } catch {
-        /* backend not reachable — keep using the local cache */
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  // Keep the queue in sync with patients submitted from the CHC intake app.
-  // Polls every few seconds so a newly submitted patient appears LIVE, without
-  // a refresh. It only appends genuinely new cases (by id) and keeps existing
-  // case objects as-is, so a slide you're viewing/annotating is never disturbed.
-  useEffect(() => {
-    let cancelled = false;
-    // Newest `updatedAt` already seen. After the first full load, each poll
-    // asks only for cases changed since this, so an idle queue transfers an
-    // empty array instead of every case, every four seconds.
-    let since = null;
-
-    const load = async (initial) => {
-      try {
-        const list = await getCases(initial ? undefined : since);
-        if (cancelled || !Array.isArray(list)) return;
-
-        // Advance the watermark past the newest change received.
-        for (const c of list) {
-          if (c.updatedAt && (!since || c.updatedAt > since)) since = c.updatedAt;
-        }
-        if (!list.length) return;                 // nothing changed — done
-
-        setIntakeCases(prev => {
-          const known = new Map(prev.map(c => [c.id, c]));
-          const additions = list.filter(c => !known.has(c.id) && !c.archived);
-
-          // Refresh cases we already hold: a slide may have finished
-          // converting, or the case may have been archived. Everything else
-          // about the existing object is preserved — notably a lazily-fetched
-          // `image` that the list response doesn't carry.
-          let changed = false;
-          const merged = prev.map((old) => {
-            const fresh = list.find(c => c.id === old.id);
-            if (!fresh) return old;
-            if (fresh.slideStatus === old.slideStatus && !fresh.archived) return old;
-            changed = true;
-            return {
-              ...old,
-              slideStatus: fresh.slideStatus,
-              dziUrl: fresh.dziUrl,
-              slideError: fresh.slideError,
-              archived: fresh.archived,
-            };
-          }).filter((c) => !c.archived);          // archived cases leave the worklist
-
-          if (!additions.length && !changed && merged.length === prev.length) return prev;
-          return [...merged, ...additions];
-        });
-      } catch {
-        /* backend offline — keep the built-in demo cases */
-      } finally {
-        if (initial && !cancelled) setLoadingCases(false);
-      }
+  // Notes arrive from the server as { caseId: { clinical, pathologist,
+  // medicine } }. The three text areas each want a { caseId: body } map, so
+  // pivot once here rather than at every read site.
+  const savedByKind = useMemo(() => {
+    const byKind: Record<NoteKind, Record<string, string>> = {
+      clinical: {}, pathologist: {}, medicine: {},
     };
-    load(true);
-    const timer = setInterval(() => load(false), 4000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, []);
+    for (const [cid, kinds] of Object.entries(notesByCase)) {
+      for (const [kind, body] of Object.entries(kinds ?? {})) {
+        const k = kind as NoteKind;
+        if (byKind[k] && typeof body === 'string') byKind[k][cid] = body;
+      }
+    }
+    return byKind;
+  }, [notesByCase]);
 
-  const viewerApiRef = useRef(null);
+  const clinicalSaved = savedByKind.clinical;
+  const pathologistSaved = savedByKind.pathologist;
+  const medicineSaved = savedByKind.medicine;
 
-  // The queue = built-in demo patients + ones submitted from CHC intake. The
-  // element objects stay stable, so an open case keeps its identity.
-  const cases = [...BASE_CASES, ...intakeCases];
-  const currentCase = cases.find(c => c.id === activeCase) || cases[0];
-  const id = activeCase;
+  const viewerApiRef = useRef<WsiViewerHandle | null>(null);
+
+  // The queue = built-in demo patients + ones submitted from CHC intake.
+  const cases = useMemo<Case[]>(() => [...BASE_CASES, ...intakeCases], [intakeCases]);
+
+  // Which case the URL points at. Falls back to the first available one so the
+  // slide/report views always have something to render even if the id is stale
+  // (a case archived in another tab, say).
+  const currentCase: Case = cases.find((c) => c.id === caseId) ?? cases[0]!;
+  const id = currentCase.id;
   const defaultClinical = `Palpable nodule identified in the ${currentCase.site.toLowerCase()}.`;
   // Which cases exist on the server (and so can be removed). The demo patients
   // are hard-coded here, not stored anywhere, so they aren't deletable.
-  const intakeIds = new Set(intakeCases.map(c => c.id));
+  const intakeIds = useMemo(() => new Set(intakeCases.map((c) => c.id)), [intakeCases]);
 
   // Remove a patient from the worklist. This ARCHIVES rather than destroys:
   // the record and its slide stay on disk and can be restored, which is the
   // right default for clinical data — a mis-click shouldn't be unrecoverable.
-  const deletePatient = async (c) => {
-    setDeleting(true);
+  const deletePatient = async (c: Case) => {
     try {
-      await setCaseArchived(c.id, true);
-      // Drop it locally straight away rather than waiting for the next poll,
-      // so the row disappears the moment the action is confirmed.
-      setIntakeCases(prev => prev.filter(x => x.id !== c.id));
-      // If the removed patient was open, fall back to the first remaining case.
-      if (activeCase === c.id) {
-        const fallback = [...BASE_CASES, ...intakeCases.filter(x => x.id !== c.id)][0];
-        if (fallback) setActiveCase(fallback.id);
-        setPage('queue');
-      }
+      // The mutation drops it from the cached list itself, so the row
+      // disappears the moment the action is confirmed rather than on the
+      // next poll — see useArchiveCase in queries.ts.
+      await archiveMutation.mutateAsync({ caseId: c.id, archived: true });
+      // If the removed patient was the one open, its URL is now dead — send
+      // the pathologist back to the worklist rather than leaving them on a
+      // case that no longer exists.
+      if (caseId === c.id) navigate('/queue');
       setConfirmDelete(null);
     } catch (err) {
-      alert(err?.message || 'Could not remove this patient. Is the backend running?');
-    } finally {
-      setDeleting(false);
+      alert(err instanceof Error ? err.message : 'Could not remove this patient. Is the backend running?');
     }
   };
 
-  const openCase = (cid) => {
-    const c = intakeCases.find(x => x.id === cid);
+  const openCase = (cid: number) => {
+    const c = intakeCases.find((x) => x.id === cid);
     // A scanned slide still uploading or converting has nothing to show yet,
     // and a failed one never will — leave the pathologist in the queue rather
     // than opening an empty viewer. The row itself explains the state.
     if (c && (c.slideStatus === 'processing' || c.slideStatus === 'failed')) return;
 
-    setActiveCase(cid);
-    setPage('slide');
-    // Intake patients arrive without their image (kept out of the list for
-    // speed); fetch it now so the WSI viewer can show the slide. Whole-slide
-    // cases have no `image` at all — they stream tiles from `dziUrl` instead.
-    if (c && c.hasImage && !c.image && !c.dziUrl) {
-      getCaseImage(cid)
-        .then(img => setIntakeCases(prev => prev.map(x => (x.id === cid ? { ...x, image: img } : x))))
-        .catch(() => {});
-    }
+    // Navigating by URL rather than by state is what makes this case linkable.
+    navigate(`/case/${cid}/slide`);
+    // Intake patients arrive without their photo (kept out of the list for
+    // speed); fetch it now so the viewer can show it. Whole-slide cases have
+    // no inline image at all — they stream tiles from `dziUrl` instead.
+    void loadCaseImage(cid);
   };
 
   const enableAnnotation = () => {
@@ -468,25 +418,24 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
   // straight to the patient list, the current patient's slide, or their
   // report. Blocked while mid-annotation (isDrawing) so a rail click can't
   // silently discard unsaved drawings — same rule as the "Back" button.
-  const navigateTo = (id) => {
+  const navigateTo = (target: string) => {
     if (isDrawing) return;
-    if (id === 'queue') setPage('queue');
-    else if (id === 'slides') setPage('slide');
-    else if (id === 'reports') setPage('details');
+    if (target === 'queue') navigate('/queue');
+    else if (target === 'slides') navigate(`/case/${id}/slide`);
+    else if (target === 'reports') navigate(`/case/${id}/report`);
   };
 
   // Persist the current marks as vector JSON and push to the backend. Shared
   // by the instant Save and the save-on-close flow. This is a few KB per case
   // rather than the ~16 MB flattened PNG the old scheme stored.
-  const persistAnnotations = async () => {
-    const json = await viewerApiRef.current?.save();
-    if (json) {
-      setAnnotations(prev => ({ ...prev, [id]: json }));
-      // Writes only THIS case's row, so a colleague saving a different case at
-      // the same moment cannot overwrite it.
-      saveAnnotations(id, json);
-    }
-    return !!json;
+  const persistAnnotations = async (): Promise<boolean> => {
+    const json = viewerApiRef.current?.save() ?? null;
+    if (!json) return false;
+    // Writes only THIS case's row, so a colleague saving a different case at
+    // the same moment cannot overwrite it. The mutation also updates the
+    // cached annotations, so the UI reflects the save immediately.
+    await saveAnnotationsMutation.mutateAsync({ caseId: id, data: json as AnnotationData });
+    return true;
   };
 
   // Instant Save — saves the work so far but STAYS in annotation mode so the
@@ -522,38 +471,44 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
   };
 
   // Brief "Saved ✓" feedback on the text Save buttons
-  const flashSaved = (key) => {
+  const flashSaved = (key: string) => {
     setSavedFlash(key);
-    setTimeout(() => setSavedFlash(f => (f === key ? null : f)), 1800);
+    setTimeout(() => setSavedFlash((f) => (f === key ? null : f)), 1800);
   };
-  // Each Save commits the draft to the persisted "saved" copy, pushes it to the
-  // shared backend (so other machines see it), then clears the textarea.
+
+  // Each Save commits the draft to the persisted copy, pushes it to the shared
+  // backend (so other machines see it), then clears the textarea.
   //
   // The backend write targets ONE case and ONE note kind. Previously every
   // save re-uploaded a map of every patient's notes, so two people saving
   // different patients at the same moment would silently discard one of the
-  // two sets of notes — a real way to lose clinical text.
-  const saveClinical = () => {
-    const body = clinicalDraft[id] ?? defaultClinical;
-    setClinicalSaved(prev => ({ ...prev, [id]: body }));
-    saveNote(id, 'clinical', body);
-    setClinicalDraft(prev => ({ ...prev, [id]: '' }));
-    flashSaved('clinical');
+  // two sets of notes — a real way to lose clinical text. The mutation
+  // updates the cached notes on success, so the saved copy appears at once.
+  const saveNoteOfKind = (
+    kind: NoteKind,
+    body: string,
+    clearDraft: React.Dispatch<React.SetStateAction<Record<string, string>>>,
+  ) => {
+    saveNoteMutation.mutate({ caseId: id, kind, body });
+    // DELETE the draft rather than blanking it. The textareas fall back to the
+    // saved copy when no draft exists, so removing the key makes the just-saved
+    // text stay on screen. Setting it to '' (as this did previously) left the
+    // box empty and made saved clinical/medicine notes impossible to read back
+    // — they were on the server but nothing ever displayed them.
+    clearDraft((prev) => {
+      const next = { ...prev };
+      delete next[String(id)];
+      return next;
+    });
+    flashSaved(kind);
   };
-  const savePathologist = () => {
-    const body = pathologistDraft[id] ?? '';
-    setPathologistSaved(prev => ({ ...prev, [id]: body }));
-    saveNote(id, 'pathologist', body);
-    setPathologistDraft(prev => ({ ...prev, [id]: '' }));
-    flashSaved('pathologist');
-  };
-  const saveMedicine = () => {
-    const body = medicineDraft[id] ?? '';
-    setMedicineSaved(prev => ({ ...prev, [id]: body }));
-    saveNote(id, 'medicine', body);
-    setMedicineDraft(prev => ({ ...prev, [id]: '' }));
-    flashSaved('medicine');
-  };
+
+  const saveClinical = () =>
+    saveNoteOfKind('clinical', clinicalDraft[String(id)] ?? defaultClinical, setClinicalDraft);
+  const savePathologist = () =>
+    saveNoteOfKind('pathologist', pathologistDraft[String(id)] ?? '', setPathologistDraft);
+  const saveMedicine = () =>
+    saveNoteOfKind('medicine', medicineDraft[String(id)] ?? '', setMedicineDraft);
 
   // Modal openers
   // The annotated picture is BUILT HERE, on demand, from the saved vector
@@ -561,8 +516,8 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
   // a loading state rather than freezing the page while the slide overview
   // downloads and composites.
   const viewAnnotatedImage = async () => {
-    const marks = annotations[id];
-    const legacy = legacyAnnotatedImages[id];
+    const marks = annotations[String(id)] ?? null;
+    const legacy = legacyAnnotatedImages[String(id)] ?? null;
 
     if (!hasAnnotations(marks) && !legacy) {
       setModal({ type: 'message', title: 'No annotated image', text: 'No annotations have been saved for this patient yet. Open the slide, annotate it, and choose “Save Changes”.' });
@@ -584,12 +539,14 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
       ? await renderAnnotatedImage(currentCase, null)
       : (currentCase.image ? resolveImageUrl(currentCase.image) : null);
 
-    setModal((m) => (m && m.title === title
-      ? { type: 'image', title, src, rawSrc, showAnnotations: true, loading: false }
-      : m));   // a different modal was opened meanwhile — don't clobber it
+    // Built explicitly rather than spread from the previous modal: `Modal` is a
+    // discriminated union, and spreading it widens the type so TypeScript can
+    // no longer tell which variant this is.
+    const ready: Modal = { type: 'image', title, src: src ?? null, rawSrc, showAnnotations: true, loading: false };
+    setModal((m) => (m && m.title === title ? ready : m));   // a different modal opened meanwhile — don't clobber it
   };
   const viewPathologistNotes = () => {
-    const text = pathologistSaved[id];
+    const text = pathologistSaved[String(id)];
     setModal({
       type: 'text',
       title: `Pathologist consultation — ${currentCase.patient}`,
@@ -605,7 +562,12 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
   // chip buttons duplicated inside the Pathologist and Medicine consultation
   // cards; they now live once, in their own dedicated spot, sized to be the
   // clear first stop on this page.
-  const ReviewTile = ({ icon: Icon, label, caption, onClick }) => (
+  const ReviewTile = ({ icon: Icon, label, caption, onClick }: {
+    icon: LucideIcon;
+    label: string;
+    caption: string;
+    onClick: () => void;
+  }) => (
     <button onClick={onClick}
       className="flex-1 min-w-[240px] flex items-center gap-3.5 bg-neutral-50 border border-gray-200 rounded-xl px-4 py-3.5 text-left hover:bg-white hover:border-indigo-300 hover:shadow-md active:scale-[0.98] transition-all">
       <span className="w-11 h-11 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-indigo-600/25">
@@ -624,7 +586,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
     // These always reflect the FULL list — the search/filter below only
     // affects which rows the worklist shows, not these totals.
     const pendingCount = cases.filter(c => c.status === 'Pending').length;
-    const pad2 = (n) => String(n).padStart(2, '0');
+    const pad2 = (n: number) => String(n).padStart(2, "0");
     const stats = [
       { label: 'Total',    value: pad2(cases.length),                icon: ClipboardList, tint: 'bg-indigo-50 text-indigo-600',   num: 'text-slate-900' },
       { label: 'Pending',  value: pad2(pendingCount),                icon: Clock,         tint: 'bg-amber-50 text-amber-600',     num: 'text-amber-700' },
@@ -710,7 +672,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
                     just decoration; "All" is the default so nothing is hidden
                     until the pathologist actually narrows it down. */}
                 <div className="flex bg-gray-100 rounded-[9px] p-[3px] gap-0.5">
-                  {['All', 'Pending', 'Reported'].map((f) => (
+                  {(['All', 'Pending', 'Reported'] as const).map((f) => (
                     <button
                       key={f}
                       onClick={() => setQueueStatusFilter(f)}
@@ -917,7 +879,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
         <div className="flex-1 min-w-0 clinical-bg overflow-y-auto flex flex-col">
           <div className="sticky top-0 bg-white border-b border-gray-200 px-4 sm:px-8 py-3.5 flex items-center gap-3 z-10">
             <button
-              onClick={() => setPage('slide')}
+              onClick={() => navigate(`/case/${id}/slide`)}
               title="Back to slide"
               className="p-2.5 rounded-[10px] text-slate-600 bg-gray-100 hover:bg-gray-200 border border-gray-200 transition-all shrink-0"
             >
@@ -972,14 +934,17 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
             {/* 1. NIKSAY Patient Information — read-only facts shown as a 2-col grid */}
             <SectionCard icon={ClipboardList} title="1. NIKSAY Patient Information">
               <dl className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-gray-100 rounded-xl overflow-hidden border border-gray-100 flex-1 auto-rows-fr">
-                {[
+                {/* Typed as a tuple array so `k` is known to be a string and
+                    can be used as a React key — an untyped array literal
+                    widens every element to `string | boolean`. */}
+                {([
                   ['Patient Name', currentCase.patient, false],
                   ['Age / Gender', `${currentCase.age} yrs · ${currentCase.gender}`, true],
                   ['Registration ID', `NK-2026-${currentCase.id}001`, true],
                   ['Specimen Site', currentCase.site, false],
                   ['Status', currentCase.status, false],
                   ['Collected', currentCase.date, true],
-                ].map(([k, v, mono]) => (
+                ] as [string, string, boolean][]).map(([k, v, mono]) => (
                   <div key={k} className="bg-neutral-50 px-4 py-3 flex flex-col justify-center">
                     <dt className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{k}</dt>
                     <dd className={`${mono ? 'mono ' : ''}text-sm font-semibold mt-0.5 ${k === 'Status' ? 'text-amber-700' : 'text-slate-900'}`}>{v}</dd>
@@ -993,7 +958,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
               <textarea
                 className={taClass}
                 placeholder="Enter clinical notes…"
-                value={clinicalDraft[id] ?? defaultClinical}
+                value={clinicalDraft[String(id)] ?? clinicalSaved[String(id)] ?? defaultClinical}
                 onChange={(e) => setClinicalDraft(prev => ({ ...prev, [id]: e.target.value }))}
               />
               <div className="flex flex-wrap gap-2 mt-4">
@@ -1011,7 +976,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
               <textarea
                 className={taClass}
                 placeholder="Enter microscopic findings…"
-                value={pathologistDraft[id] ?? ''}
+                value={pathologistDraft[String(id)] ?? pathologistSaved[String(id)] ?? ''}
                 onChange={(e) => setPathologistDraft(prev => ({ ...prev, [id]: e.target.value }))}
               />
               <div className="flex flex-wrap gap-2 mt-4">
@@ -1028,7 +993,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
               <textarea
                 className={taClass}
                 placeholder="Physician recommendations…"
-                value={medicineDraft[id] ?? ''}
+                value={medicineDraft[String(id)] ?? medicineSaved[String(id)] ?? ''}
                 onChange={(e) => setMedicineDraft(prev => ({ ...prev, [id]: e.target.value }))}
               />
               <div className="flex flex-wrap gap-2 mt-4">
@@ -1095,8 +1060,11 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
                           annotated PNG and the original slide image, no re-fetch. */}
                       {modal.rawSrc && (
                         <div className="inline-flex items-center gap-1 bg-neutral-100 rounded-lg p-1 mb-3">
+                          {/* Spreading `m` directly would widen the discriminated
+                              union and lose the 'image' variant, so the toggle
+                              narrows on `type` before rebuilding it. */}
                           <button
-                            onClick={() => setModal((m) => ({ ...m, showAnnotations: true }))}
+                            onClick={() => setModal((m) => (m?.type === 'image' ? { ...m, showAnnotations: true } : m))}
                             className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
                               modal.showAnnotations !== false ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                             }`}
@@ -1104,7 +1072,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
                             Annotated
                           </button>
                           <button
-                            onClick={() => setModal((m) => ({ ...m, showAnnotations: false }))}
+                            onClick={() => setModal((m) => (m?.type === 'image' ? { ...m, showAnnotations: false } : m))}
                             className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
                               modal.showAnnotations === false ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
                             }`}
@@ -1158,7 +1126,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
           {/* Back to queue — disabled while annotating so you can't leave with
               unsaved drawings (the save dialog is the only exit then). */}
           <button
-            onClick={() => setPage('queue')}
+            onClick={() => navigate('/queue')}
             title="Back to queue"
             disabled={isDrawing}
             className="p-2.5 rounded-[10px] text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1310,7 +1278,7 @@ const TelepathologyDashboard = ({ user, onLogout }) => {
       {/* Floating button to the prescription page — hidden while annotating */}
       {!isDrawing && (
         <button
-          onClick={() => setPage('details')}
+          onClick={() => navigate(`/case/${id}/report`)}
           className="absolute bottom-5 right-5 z-[70] flex items-center gap-2 px-4 py-3 bg-indigo-600 text-white rounded-full font-semibold text-sm shadow-lg shadow-indigo-950/50 border border-indigo-500 hover:bg-indigo-500 hover:shadow-xl active:scale-95 transition-all"
         >
           <FileText className="w-4 h-4" />

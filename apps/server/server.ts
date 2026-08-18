@@ -36,24 +36,25 @@
  * exporting them into the shell by hand every time.
  */
 import 'dotenv/config';
-import express from 'express';
+import express, { type RequestHandler } from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
-import * as db from './db.js';
+import * as db from './db.ts';
+import type { Role } from './types.ts';
 import {
   hashPassword, verifyPassword, signToken, authRequired, publicUser,
   generateResetCode, hashResetCode, verifyResetCode,
-} from './auth.js';
-import { isMailConfigured, sendResetCodeEmail, verifyMailer } from './mailer.js';
+} from './auth.ts';
+import { isMailConfigured, sendResetCodeEmail, verifyMailer } from './mailer.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-db.migrateLegacyJson();          // bring across any existing data.json on first run
-db.failStaleProcessingSlides();  // no one is converting slides left over from a previous run
+await db.migrateLegacyJson();          // bring across any existing data.json on first run
+await db.failStaleProcessingSlides();  // no one is converting slides left over from a previous run
 
 const app = express();
 
@@ -85,8 +86,8 @@ app.use(express.json({ limit: '50mb' }));   // slide images arrive as large data
 // A small fixed-window counter kept in memory — no extra dependency. It exists
 // to blunt password guessing and upload floods; it is per-process, so it is a
 // speed bump rather than a distributed defence.
-const rateBuckets = new Map();
-function rateLimit({ windowMs, max, key = 'ip' }) {
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+function rateLimit({ windowMs, max, key = 'ip' }: { windowMs: number; max: number; key?: string }): RequestHandler {
   return (req, res, next) => {
     const id = `${key}:${req.ip}:${req.path}`;
     const now = Date.now();
@@ -129,7 +130,7 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // File extensions OpenSlide can read. Anything else keeps using the old
 // data-URL path (a plain photo of a slide, as before).
 const SLIDE_EXTENSIONS = new Set(['.tiff', '.tif', '.svs', '.ndpi', '.scn', '.mrxs', '.vms', '.vmu', '.bif']);
-export const isSlideFile = (filename) => SLIDE_EXTENSIONS.has(path.extname(String(filename)).toLowerCase());
+export const isSlideFile = (filename: string) => SLIDE_EXTENSIONS.has(path.extname(String(filename)).toLowerCase());
 
 // Start the tile server as a child process and keep it alive for as long as
 // this server runs. It binds to 127.0.0.1 only; browsers reach it through the
@@ -139,7 +140,7 @@ export const isSlideFile = (filename) => SLIDE_EXTENSIONS.has(path.extname(Strin
 // broken until someone notices and restarts the whole backend. Restarts back
 // off up to a ceiling so a genuinely broken install doesn't spin in a tight
 // loop, and the counter resets once a process has stayed up a while.
-let tileProc = null;
+let tileProc: ChildProcess | null = null;
 let tileShuttingDown = false;
 let tileRestarts = 0;
 const TILE_RESTART_BASE_MS = 1000;
@@ -153,15 +154,15 @@ function startTileServer() {
   const startedAt = Date.now();
 
   tileProc = spawn(python, [script, UPLOADS_DIR, String(TILE_PORT)], { stdio: ['ignore', 'pipe', 'pipe'] });
-  tileProc.stdout.on('data', (d) => process.stdout.write(d));
-  tileProc.stderr.on('data', (d) => process.stderr.write(`[tiles] ${d}`));
+  tileProc.stdout?.on('data', (d: Buffer) => process.stdout.write(d));
+  tileProc.stderr?.on('data', (d: Buffer) => process.stderr.write(`[tiles] ${d}`));
 
-  tileProc.on('error', (e) => {
+  tileProc.on('error', (e: Error) => {
     console.error(`[tiles] could not start Python tile server (${e.message}).`);
     console.error('[tiles] Whole-slide (.tiff) viewing is unavailable; ordinary image cases still work.');
   });
 
-  tileProc.on('exit', (code, signal) => {
+  tileProc.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
     tileProc = null;
     if (tileShuttingDown) return;                  // we killed it on purpose
     if (Date.now() - startedAt > TILE_HEALTHY_MS) tileRestarts = 0;
@@ -174,7 +175,7 @@ function startTileServer() {
 }
 startTileServer();
 // Don't leave an orphaned Python process behind when this server stops.
-for (const sig of ['SIGINT', 'SIGTERM']) {
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     tileShuttingDown = true;                       // stop the supervisor respawning it
     try { tileProc?.kill(); } catch { /* already gone */ }
@@ -209,14 +210,14 @@ app.get('/slides/:caseId/*', async (req, res) => {
 // case (POST /api/cases/:id/slide) rather than one combined submission.
 const upload = multer({
   storage: multer.diskStorage({
-    destination: (req, file, cb) => {
+    destination: (req, _file, cb) => {
       const dir = path.join(UPLOADS_DIR, String(req.params.id));
       fs.mkdirSync(dir, { recursive: true });
       cb(null, dir);
     },
     // Keep only the extension — OpenSlide picks its reader from that, and it
     // avoids trusting a client-supplied filename as a path.
-    filename: (req, file, cb) => cb(null, `slide${path.extname(file.originalname).toLowerCase()}`),
+    filename: (_req, file, cb) => cb(null, `slide${path.extname(file.originalname).toLowerCase()}`),
   }),
   limits: { fileSize: 20 * 1024 * 1024 * 1024 },   // 20 GB ceiling
 });
@@ -226,11 +227,11 @@ const upload = multer({
 // users table and these same routes — `role` is what keeps the two account
 // types apart. `chcName` only makes sense for a lab attendant (it's their
 // health centre); a pathologist isn't tied to one, so it's just stored empty.
-const ROLES = ['lab_attendant', 'pathologist'];
+const ROLES: Role[] = ['lab_attendant', 'pathologist'];
 
 // Sign up: creates an account. Lab attendants also give their CHC name;
 // pathologists just give a name, email and password.
-app.post('/api/auth/signup', authLimiter, (req, res) => {
+app.post('/api/auth/signup', authLimiter, async (req, res) => {
   const { email, password, fullName, chcName, role = 'lab_attendant' } = req.body || {};
   if (!ROLES.includes(role))
     return res.status(400).json({ error: 'Unknown account type.' });
@@ -242,10 +243,10 @@ app.post('/api/auth/signup', authLimiter, (req, res) => {
   // Scoped to THIS role: the same email may already have an account under
   // the OTHER role (e.g. this person also uses the CHC intake portal) — that
   // doesn't block a new account here, only a duplicate within this role does.
-  if (db.getUserByEmailAndRole(String(email).trim(), role))
+  if (await db.getUserByEmailAndRole(String(email).trim(), role))
     return res.status(409).json({ error: 'An account with this email already exists.' });
 
-  const user = db.createUser({
+  const user = await db.createUser({
     email: String(email).trim(),
     passwordHash: hashPassword(password),
     fullName: String(fullName).trim(),
@@ -258,11 +259,11 @@ app.post('/api/auth/signup', authLimiter, (req, res) => {
 // Log in: the same email can now have TWO accounts (one lab-attendant, one
 // pathologist), so `role` — which portal is asking — is what picks the
 // right one, not just email + password on its own.
-app.post('/api/auth/login', authLimiter, (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password, role } = req.body || {};
   const trimmedEmail = String(email || '').trim();
 
-  const user = role ? db.getUserByEmailAndRole(trimmedEmail, role) : db.getUserByEmail(trimmedEmail);
+  const user = role ? await db.getUserByEmailAndRole(trimmedEmail, role) : await db.getUserByEmail(trimmedEmail);
   if (user && verifyPassword(password || '', user.password_hash)) {
     return res.json({ token: signToken(user), user: publicUser(user) });
   }
@@ -272,7 +273,7 @@ app.post('/api/auth/login', authLimiter, (req, res) => {
   // a generic error, so they know to use the other portal.
   if (role) {
     const otherRole = ROLES.find((r) => r !== role);
-    const other = db.getUserByEmailAndRole(trimmedEmail, otherRole);
+    const other = otherRole ? await db.getUserByEmailAndRole(trimmedEmail, otherRole) : undefined;
     if (other && verifyPassword(password || '', other.password_hash)) {
       return res.status(403).json({
         error: other.role === 'lab_attendant'
@@ -285,14 +286,14 @@ app.post('/api/auth/login', authLimiter, (req, res) => {
 });
 
 // Who am I? Lets the app restore the session on reload from its saved token.
-app.get('/api/auth/me', authRequired, (req, res) => res.json({ user: publicUser(req.user) }));
+app.get('/api/auth/me', authRequired, async (req, res) => res.json({ user: publicUser(req.user!) }));
 
 // Edit profile: update the signed-in attendant's name and CHC.
-app.patch('/api/auth/profile', authRequired, (req, res) => {
+app.patch('/api/auth/profile', authRequired, async (req, res) => {
   const { fullName, chcName } = req.body || {};
   if (!fullName || !String(fullName).trim() || !chcName || !String(chcName).trim())
     return res.status(400).json({ error: 'Name and CHC are required.' });
-  const user = db.updateProfile(req.user.id, {
+  const user = await db.updateProfile(req.user!.id, {
     fullName: String(fullName).trim(), chcName: String(chcName).trim(),
   });
   res.json({ user: publicUser(user) });
@@ -312,12 +313,12 @@ app.patch('/api/auth/profile', authRequired, (req, res) => {
 const RESET_CODE_TTL_MS = 15 * 60_000;
 const RESET_CODE_TTL_MIN = RESET_CODE_TTL_MS / 60_000;
 const RESET_MAX_ATTEMPTS = 5;
-const PORTAL_NAMES = { lab_attendant: 'EPTB Hub — CHC Intake', pathologist: 'EPTB Hub — Pathology Console' };
+const PORTAL_NAMES: Record<Role, string> = { lab_attendant: 'EPTB Hub — CHC Intake', pathologist: 'EPTB Hub — Pathology Console' };
 
-app.post('/api/auth/request-reset', resetLimiter, (req, res) => {
+app.post('/api/auth/request-reset', resetLimiter, async (req, res) => {
   const { email, role = 'lab_attendant' } = req.body || {};
   if (!email) return res.status(400).json({ error: 'Email is required.' });
-  const user = db.getUserByEmailAndRole(String(email).trim(), role);
+  const user = await db.getUserByEmailAndRole(String(email).trim(), role);
 
   // Always answer the same way, whether or not the account exists — otherwise
   // this endpoint becomes a way to discover which emails are registered. The
@@ -332,7 +333,7 @@ app.post('/api/auth/request-reset', resetLimiter, (req, res) => {
   if (!user) return res.json(generic);
 
   const code = generateResetCode();
-  db.storeResetCode(user.id, hashResetCode(code), Date.now() + RESET_CODE_TTL_MS);
+  await db.storeResetCode(user.id, hashResetCode(code), Date.now() + RESET_CODE_TTL_MS);
 
   if (isMailConfigured) {
     // Deliberately NOT awaited: the response above must go out at the same
@@ -342,8 +343,8 @@ app.post('/api/auth/request-reset', resetLimiter, (req, res) => {
       to: user.email,
       code,
       expiresInMinutes: RESET_CODE_TTL_MIN,
-      portalName: PORTAL_NAMES[user.role] || 'EPTB Hub',
-    }).catch((e) => console.error(`Email: failed to send reset code to ${user.email}:`, e.message));
+      portalName: PORTAL_NAMES[user.role as Role] || 'EPTB Hub',
+    }).catch((e: Error) => console.error(`Email: failed to send reset code to ${user.email}:`, e.message));
   } else {
     console.log('');
     console.log('==================== PASSWORD RESET CODE ====================');
@@ -356,38 +357,38 @@ app.post('/api/auth/request-reset', resetLimiter, (req, res) => {
   res.json(generic);
 });
 
-app.post('/api/auth/reset-password', resetLimiter, (req, res) => {
+app.post('/api/auth/reset-password', resetLimiter, async (req, res) => {
   const { email, code, newPassword, role = 'lab_attendant' } = req.body || {};
   if (!email || !code || !newPassword)
     return res.status(400).json({ error: 'Email, reset code and a new password are all required.' });
   if (String(newPassword).length < 6)
     return res.status(400).json({ error: 'New password must be at least 6 characters.' });
 
-  const user = db.getUserByEmailAndRole(String(email).trim(), role);
+  const user = await db.getUserByEmailAndRole(String(email).trim(), role);
   const invalid = { error: 'That reset code is not valid or has expired.' };
   if (!user) return res.status(400).json(invalid);
 
-  const record = db.getResetCode(user.id);
+  const record = await db.getResetCode(user.id);
   if (!record) return res.status(400).json(invalid);
-  if (Date.now() > record.expires_at) { db.clearResetCode(user.id); return res.status(400).json(invalid); }
+  if (Date.now() > record.expires_at) { await db.clearResetCode(user.id); return res.status(400).json(invalid); }
   if (record.attempts >= RESET_MAX_ATTEMPTS) {
-    db.clearResetCode(user.id);
+    await db.clearResetCode(user.id);
     return res.status(429).json({ error: 'Too many incorrect codes. Request a new one.' });
   }
   if (!verifyResetCode(code, record.code_hash)) {
-    db.bumpResetAttempts(user.id);
+    await db.bumpResetAttempts(user.id);
     return res.status(400).json(invalid);
   }
 
-  db.updatePassword(user.id, hashPassword(newPassword));
-  db.clearResetCode(user.id);          // single use
-  db.bumpTokenVersion(user.id);        // sign out everywhere: old tokens die now
+  await db.updatePassword(user.id, hashPassword(newPassword));
+  await db.clearResetCode(user.id);          // single use
+  await db.bumpTokenVersion(user.id);        // sign out everywhere: old tokens die now
   res.json({ ok: true });
 });
 
 // Sign out of every device: invalidates all tokens issued so far.
-app.post('/api/auth/logout-all', authRequired, (req, res) => {
-  db.bumpTokenVersion(req.user.id);
+app.post('/api/auth/logout-all', authRequired, async (req, res) => {
+  await db.bumpTokenVersion(req.user!.id);
   res.json({ ok: true });
 });
 
@@ -395,31 +396,32 @@ app.post('/api/auth/logout-all', authRequired, (req, res) => {
 // Only still used for the legacy annotated-image fallback. Notes and
 // annotations moved to their own per-case routes below, because writing them
 // as one blob per key meant simultaneous saves overwrote each other.
-app.get('/api/store/:key', (req, res) => res.json(db.getKV(req.params.key)));
-app.put('/api/store/:key', (req, res) => { db.setKV(req.params.key, req.body); res.json({ ok: true }); });
+app.get('/api/store/:key', async (req, res) => res.json(await db.getKV(String(req.params.key))));
+app.put('/api/store/:key', async (req, res) => { await db.setKV(String(req.params.key), req.body); res.json({ ok: true }); });
 
 // ===== Notes & annotations (per case) =======================================
 // Reads stay bulk (cheap, and the dashboard wants everything at once); it is
 // only the WRITES that had to become per-row to be safe under concurrency.
-app.get('/api/notes', (_req, res) => res.json(db.getAllNotes()));
-app.get('/api/annotations', (_req, res) => res.json(db.getAllAnnotations()));
+app.get('/api/notes', async (_req, res) => res.json(await db.getAllNotes()));
+app.get('/api/annotations', async (_req, res) => res.json(await db.getAllAnnotations()));
 
 // Save ONE note on ONE case. Touches a single row, so a colleague saving a
 // different case at the same moment can't clobber it.
-app.put('/api/cases/:id/notes/:kind', authRequired, (req, res) => {
-  const { id, kind } = req.params;
+app.put('/api/cases/:id/notes/:kind', authRequired, async (req, res) => {
+  const id = String(req.params.id);
+  const kind = String(req.params.kind);
   if (!db.NOTE_KINDS.includes(kind))
     return res.status(400).json({ error: `Unknown note type "${kind}".` });
-  if (!db.getCaseMeta(id)) return res.status(404).json({ error: 'Case not found.' });
+  if (!await db.getCaseMeta(id)) return res.status(404).json({ error: 'Case not found.' });
   const body = typeof req.body?.body === 'string' ? req.body.body : '';
-  db.setNote(id, kind, body, req.user.id);
+  await db.setNote(id, kind, body, req.user!.id);
   res.json({ ok: true });
 });
 
-app.put('/api/cases/:id/annotations', authRequired, (req, res) => {
-  const { id } = req.params;
-  if (!db.getCaseMeta(id)) return res.status(404).json({ error: 'Case not found.' });
-  db.setAnnotations(id, req.body ?? {}, req.user.id);
+app.put('/api/cases/:id/annotations', authRequired, async (req, res) => {
+  const id = String(req.params.id);
+  if (!await db.getCaseMeta(id)) return res.status(404).json({ error: 'Case not found.' });
+  await db.setAnnotations(id, req.body ?? {}, req.user!.id);
   res.json({ ok: true });
 });
 
@@ -428,14 +430,14 @@ app.put('/api/cases/:id/annotations', authRequired, (req, res) => {
 // `?since=<iso>` returns only cases changed since then, so the worklist can
 // poll for changes rather than re-downloading everything every few seconds.
 // `?includeArchived=1` brings back soft-deleted cases.
-app.get('/api/cases', (req, res) => res.json(db.listCases({
-  since: req.query.since,
+app.get('/api/cases', async (req, res) => res.json(await db.listCases({
+  since: typeof req.query.since === 'string' ? req.query.since : null,
   includeArchived: req.query.includeArchived === '1',
 })));
 
 // One full case, including its slide image (fetched when a slide is opened).
-app.get('/api/cases/:id', (req, res) => {
-  const c = db.getCase(req.params.id);
+app.get('/api/cases/:id', async (req, res) => {
+  const c = await db.getCase(String(req.params.id));
   if (!c) return res.status(404).json({ error: 'not found' });
   res.json(c);
 });
@@ -444,8 +446,8 @@ app.get('/api/cases/:id', (req, res) => {
 // do it (a pathologist has no CHC to stamp the case with). The attendant name
 // and CHC are taken from the logged-in account (not trusted from the
 // request), so every case is reliably stamped with who submitted it and from where.
-app.post('/api/cases', authRequired, (req, res) => {
-  if (req.user.role !== 'lab_attendant')
+app.post('/api/cases', authRequired, async (req, res) => {
+  if (req.user!.role !== 'lab_attendant')
     return res.status(403).json({ error: 'Only a CHC lab attendant account can submit a case.' });
   const body = req.body || {};
   if (!body.patient || !String(body.patient).trim())
@@ -456,7 +458,7 @@ app.post('/api/cases', authRequired, (req, res) => {
   // duplicate submission, so it's rejected here with the clashing patient
   // named — far easier to fix now than after two records have diverged.
   if (body.chcId && String(body.chcId).trim()) {
-    const clash = db.findCaseByChcId(body.chcId, req.user.chc_name);
+    const clash = await db.findCaseByChcId(body.chcId, req.user!.chc_name);
     if (clash) {
       return res.status(409).json({
         error: `CHC Patient ID "${String(body.chcId).trim()}" is already used by "${clash.patient}" (case ${clash.id}). Please check the ID.`,
@@ -464,73 +466,74 @@ app.post('/api/cases', authRequired, (req, res) => {
     }
   }
 
-  const id = db.createCase(body, req.user);
-  res.json(db.getCaseMeta(id));
+  const id = await db.createCase(body, req.user!);
+  res.json(await db.getCaseMeta(id));
 });
 
 // Archive / restore a case (soft delete). The record and any slide file stay
 // on disk — clinical data is rarely safe to destroy — the case simply stops
 // appearing in the worklist, and can be brought back.
-app.patch('/api/cases/:id/archived', authRequired, (req, res) => {
-  const existing = db.getCaseMeta(req.params.id);
+app.patch('/api/cases/:id/archived', authRequired, async (req, res) => {
+  const existing = await db.getCaseMeta(String(req.params.id));
   if (!existing) return res.status(404).json({ error: 'Case not found.' });
   const archived = req.body?.archived !== false;
-  res.json(db.setCaseArchived(req.params.id, archived));
+  res.json(await db.setCaseArchived(String(req.params.id), archived));
 });
 
 // Attach a whole-slide file (.tiff/.svs/...) to a case that was just created.
 // Split out from POST /api/cases because the file is written straight to
 // uploads/<caseId>/ as it streams in, so the case id has to exist first.
-app.post('/api/cases/:id/slide', authRequired, uploadLimiter, (req, res, next) => {
+app.post('/api/cases/:id/slide', authRequired, uploadLimiter, async (req, res, next) => {
   // Guard BEFORE multer runs, so a bad request never writes a large file to disk.
-  if (req.user.role !== 'lab_attendant')
+  if (req.user!.role !== 'lab_attendant')
     return res.status(403).json({ error: 'Only a CHC lab attendant account can upload a slide.' });
-  const existing = db.getCaseMeta(req.params.id);
+  const existing = await db.getCaseMeta(String(req.params.id));
   if (!existing) return res.status(404).json({ error: 'Case not found.' });
-  db.setSlidePending(req.params.id, null);   // queue shows "Processing slide…" while it uploads
+  await db.setSlidePending(String(req.params.id), null);   // queue shows "Processing slide…" while it uploads
   next();
-}, upload.single('slide'), (req, res) => {
-  const id = req.params.id;
+}, upload.single('slide'), async (req, res) => {
+  const id = String(req.params.id);
   if (!req.file) {
-    db.setSlideFailed(id, 'No slide file was received.');
+    await db.setSlideFailed(id, 'No slide file was received.');
     return res.status(400).json({ error: 'No slide file was received.' });
   }
   if (!isSlideFile(req.file.originalname)) {
     fs.rm(req.file.path, { force: true }, () => {});
-    db.setSlideFailed(id, 'Unsupported slide format.');
+    await db.setSlideFailed(id, 'Unsupported slide format.');
     return res.status(400).json({ error: 'Unsupported slide format. Expected .tiff, .svs, .ndpi or similar.' });
   }
 
-  db.setSlidePending(id, req.file.path);
+  const file = req.file;
+  await db.setSlidePending(id, file.path);
 
   // Confirm the tile service can actually open it before telling the
   // pathologist it's ready — a truncated or unreadable upload should surface
   // here, not as a broken viewer later. Fetching the .dzi forces OpenSlide to
   // parse the file's structure.
   fetch(`${TILE_BASE}/slides/${id}/slide.dzi`)
-    .then((r) => {
+    .then(async (r) => {
       if (r.ok) {
-        db.setSlideReady(id, `/slides/${id}/slide.dzi`);
-        console.log(`[slide] case ${id} ready (${req.file.filename}, ${(req.file.size / 1e9).toFixed(2)} GB)`);
+        await db.setSlideReady(id, `/slides/${id}/slide.dzi`);
+        console.log(`[slide] case ${id} ready (${file.filename}, ${(file.size / 1e9).toFixed(2)} GB)`);
       } else {
-        db.setSlideFailed(id, 'The uploaded file could not be read as a slide image.');
+        await db.setSlideFailed(id, 'The uploaded file could not be read as a slide image.');
       }
     })
     .catch(() => db.setSlideFailed(id, 'Slide tile service is unavailable.'));
 
-  res.json(db.getCaseMeta(id));
+  res.json(await db.getCaseMeta(id));
 });
 
 // Poll target for the intake app + pathology queue: how far along is this
 // case's slide? Cheap enough to call every few seconds.
-app.get('/api/cases/:id/slide-status', (req, res) => {
-  const c = db.getCaseMeta(req.params.id);
+app.get('/api/cases/:id/slide-status', async (req, res) => {
+  const c = await db.getCaseMeta(String(req.params.id));
   if (!c) return res.status(404).json({ error: 'Case not found.' });
   res.json({ id: c.id, slideStatus: c.slideStatus, dziUrl: c.dziUrl, slideError: c.slideError });
 });
 
 // Simple health/landing check
-app.get('/', (_req, res) => res.send('Telepathology Console API is running.'));
+app.get('/', async (_req, res) => res.send('Telepathology Console API is running.'));
 
 // ===== Backups ==============================================================
 // This database holds every patient record, and uploads/ holds every slide.
@@ -548,35 +551,35 @@ const BACKUP_DIR = process.env.BACKUP_DIR || path.join(__dirname, 'backups');
 const BACKUP_KEEP = Number(process.env.BACKUP_KEEP || 7);
 const BACKUP_INTERVAL_MS = Number(process.env.BACKUP_INTERVAL_MS || 24 * 60 * 60 * 1000);
 
-function runBackup(reason) {
+async function runBackup(reason: string): Promise<void> {
   try {
-    const { file, bytes } = db.backupDatabase(BACKUP_DIR, BACKUP_KEEP);
+    const { file, bytes } = await db.backupDatabase(BACKUP_DIR, BACKUP_KEEP);
     console.log(`[backup] ${reason}: ${path.basename(file)} (${(bytes / 1e6).toFixed(1)} MB, keeping ${BACKUP_KEEP})`);
   } catch (e) {
-    console.error(`[backup] failed: ${e.message}`);
+    console.error(`[backup] failed: ${(e as Error).message}`);
   }
 }
-runBackup('startup');
-setInterval(() => runBackup('scheduled'), BACKUP_INTERVAL_MS).unref();
+void runBackup('startup');
+setInterval(() => void runBackup('scheduled'), BACKUP_INTERVAL_MS).unref();
 
 // Manual trigger, so a backup can be taken before anything risky.
-app.post('/api/admin/backup', authRequired, (req, res) => {
+app.post('/api/admin/backup', authRequired, async (_req, res) => {
   try {
-    const result = db.backupDatabase(BACKUP_DIR, BACKUP_KEEP);
+    const result = await db.backupDatabase(BACKUP_DIR, BACKUP_KEEP);
     res.json({ ok: true, file: path.basename(result.file), bytes: result.bytes });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`Telepathology API (SQLite) listening on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Telepathology API listening on http://localhost:${PORT}`));
 
 // Confirm the SMTP credentials actually work RIGHT NOW, at boot, rather than
 // leaving that discovery for whoever first requests a password reset. This
 // only checks the connection — it sends nothing.
 if (isMailConfigured) {
-  verifyMailer().then((r) => {
+  verifyMailer().then(async (r) => {
     console.log(r.ok
       ? `Email: connected (SMTP_HOST=${process.env.SMTP_HOST}) — reset codes will be emailed.`
       : `Email: SMTP_HOST is set but the connection failed (${r.error}). Reset codes will NOT be sent until this is fixed — see apps/server/.env.example.`);
