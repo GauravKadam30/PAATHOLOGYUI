@@ -56,7 +56,7 @@ import { resolveImageUrl, renderAnnotatedImage, hasAnnotations } from './annotat
 // for why reads are bulk but writes are per-case.
 import {
   useCases, useNotes, useAnnotations, useLegacyAnnotatedImages,
-  useSaveNote, useSaveAnnotations, useArchiveCase, useLoadCaseImage,
+  useSaveNote, useSaveAnnotations, useArchiveCase,
 } from './queries';
 import type { User, Case, CaseStatus, Modal, NoteKind, AnnotationData } from './types';
 import type { LucideIcon } from 'lucide-react';
@@ -317,7 +317,6 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   const saveNoteMutation = useSaveNote();
   const saveAnnotationsMutation = useSaveAnnotations();
   const archiveMutation = useArchiveCase();
-  const loadCaseImage = useLoadCaseImage();
 
   const intakeCases = useMemo(() => casesQuery.data ?? [], [casesQuery.data]);
   const loadingCases = casesQuery.isLoading;
@@ -401,11 +400,10 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
     if (c && (c.slideStatus === 'processing' || c.slideStatus === 'failed')) return;
 
     // Navigating by URL rather than by state is what makes this case linkable.
+    // The route's loader fetches the patient's photo, so there is nothing to
+    // trigger here — and doing it here as well would download it twice, since
+    // both requests would start before either could see the other's result.
     navigate(`/case/${cid}/slide`);
-    // Intake patients arrive without their photo (kept out of the list for
-    // speed); fetch it now so the viewer can show it. Whole-slide cases have
-    // no inline image at all — they stream tiles from `dziUrl` instead.
-    void loadCaseImage(cid);
   };
 
   const enableAnnotation = () => {

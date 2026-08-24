@@ -21,8 +21,10 @@
  *    therefore transfers an empty array. `useCases` keeps that behaviour by
  *    merging each delta into the cached list itself.
  */
-import { useRef } from 'react';
-import { useQuery, useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useQuery, useMutation, useQueryClient,
+  type UseQueryResult, type QueryClient,
+} from '@tanstack/react-query';
 import {
   getCases, getAllNotes, getAllAnnotations, apiGet,
   saveNote, saveAnnotations, setCaseArchived, getCaseImage,
@@ -41,6 +43,25 @@ export const keys = {
 
 /** How often the worklist checks for new patients. */
 const POLL_MS = 4000;
+
+/**
+ * Newest `updatedAt` already seen by the worklist query.
+ *
+ * This lives at module scope rather than in a component ref because there is
+ * exactly ONE cache entry for `['cases']` shared by every caller. A ref per
+ * component would mean several watermarks feeding one cache, so whichever
+ * instance happened to refetch would ask from its own position and could skip
+ * changes another had already advanced past. Route loaders make that concrete:
+ * the loader and the component must agree on where the list is up to.
+ *
+ * It is reset on sign-out, since the next account starts from nothing.
+ */
+let casesSince: string | null = null;
+
+/** Forget the incremental-poll position. Call when clearing the query cache. */
+export function resetCasesWatermark(): void {
+  casesSince = null;
+}
 
 /**
  * Fold a batch of changed cases into the list already held.
@@ -75,26 +96,31 @@ function mergeCases(prev: Case[], changed: Case[]): Case[] {
  * changing it must not trigger a re-render, and it has to survive between
  * polls without becoming a dependency of anything.
  */
-export function useCases(): UseQueryResult<Case[], Error> {
-  const qc = useQueryClient();
-  const since = useRef<string | null>(null);
-
-  return useQuery({
+export function casesQueryOptions(qc: QueryClient) {
+  return {
     queryKey: keys.cases,
-    queryFn: async () => {
-      const previous = qc.getQueryData<Case[]>(keys.cases) ?? [];
-      const isFirstLoad = since.current === null;
+    queryFn: async (): Promise<Case[]> => {
+      const isFirstLoad = casesSince === null;
 
-      const batch = await getCases(isFirstLoad ? undefined : since.current);
+      const batch = await getCases(isFirstLoad ? undefined : casesSince);
 
       // Advance the watermark past the newest change in this batch.
       for (const c of batch) {
-        if (c.updatedAt && (!since.current || c.updatedAt > since.current)) {
-          since.current = c.updatedAt;
+        if (c.updatedAt && (!casesSince || c.updatedAt > casesSince)) {
+          casesSince = c.updatedAt;
         }
       }
 
       if (isFirstLoad) return batch.filter((c) => !c.archived);
+
+      // Read the cache HERE, after the request, not before it. Anything that
+      // wrote to the list while this poll was in flight — most importantly a
+      // case photo arriving from loadCaseImage — would otherwise be merged
+      // over with a snapshot taken before it landed, and silently lost. That
+      // is a real race: opening a case starts both requests at once, and the
+      // photo would vanish whenever it finished first.
+      const previous = qc.getQueryData<Case[]>(keys.cases) ?? [];
+
       // Returning the SAME array reference when nothing changed means React
       // skips re-rendering the worklist entirely on an idle poll.
       if (!batch.length) return previous;
@@ -104,17 +130,25 @@ export function useCases(): UseQueryResult<Case[], Error> {
     // The list is the app's live view of shared work — always refetch on
     // mount rather than serving a stale cache.
     staleTime: 0,
-  });
+  };
+}
+
+export const notesQueryOptions = { queryKey: keys.notes, queryFn: getAllNotes };
+
+export const annotationsQueryOptions = { queryKey: keys.annotations, queryFn: getAllAnnotations };
+
+export function useCases(): UseQueryResult<Case[], Error> {
+  return useQuery(casesQueryOptions(useQueryClient()));
 }
 
 /** Every case's notes, in one request. */
 export function useNotes(): UseQueryResult<NotesByCase, Error> {
-  return useQuery({ queryKey: keys.notes, queryFn: getAllNotes });
+  return useQuery(notesQueryOptions);
 }
 
 /** Every case's vector annotations, in one request. */
 export function useAnnotations(): UseQueryResult<AnnotationsByCase, Error> {
-  return useQuery({ queryKey: keys.annotations, queryFn: getAllAnnotations });
+  return useQuery(annotationsQueryOptions);
 }
 
 /**
@@ -124,12 +158,14 @@ export function useAnnotations(): UseQueryResult<AnnotationsByCase, Error> {
  * rewrite still displays instead of silently disappearing. Failing to load it
  * is not an error worth surfacing, hence the empty-object fallback.
  */
+export const legacyImagesQueryOptions = {
+  queryKey: keys.legacyImages,
+  queryFn: () => apiGet<Record<string, string>>('pv_annotatedImages').catch(() => ({})),
+  staleTime: Infinity,   // historical data; it never changes
+};
+
 export function useLegacyAnnotatedImages(): UseQueryResult<Record<string, string>, Error> {
-  return useQuery({
-    queryKey: keys.legacyImages,
-    queryFn: () => apiGet<Record<string, string>>('pv_annotatedImages').catch(() => ({})),
-    staleTime: Infinity,   // historical data; it never changes
-  });
+  return useQuery(legacyImagesQueryOptions);
 }
 
 /**
@@ -197,21 +233,18 @@ export function useArchiveCase() {
  * it enormous), so this runs when a case is actually opened. Whole-slide cases
  * have no inline image at all — they stream tiles instead — so they skip it.
  */
-export function useLoadCaseImage() {
-  const qc = useQueryClient();
-  return async (caseId: number) => {
-    const cases = qc.getQueryData<Case[]>(keys.cases) ?? [];
-    const target = cases.find((c) => c.id === caseId);
-    if (!target || !target.hasImage || target.image || target.dziUrl) return;
+export async function loadCaseImage(qc: QueryClient, caseId: number): Promise<void> {
+  const cases = qc.getQueryData<Case[]>(keys.cases) ?? [];
+  const target = cases.find((c) => c.id === caseId);
+  if (!target || !target.hasImage || target.image || target.dziUrl) return;
 
-    try {
-      const image = await getCaseImage(caseId);
-      if (!image) return;
-      qc.setQueryData<Case[]>(keys.cases, (prev) =>
-        (prev ?? []).map((c) => (c.id === caseId ? { ...c, image } : c)),
-      );
-    } catch {
-      /* the viewer shows its own "couldn't load" state */
-    }
-  };
+  try {
+    const image = await getCaseImage(caseId);
+    if (!image) return;
+    qc.setQueryData<Case[]>(keys.cases, (prev) =>
+      (prev ?? []).map((c) => (c.id === caseId ? { ...c, image } : c)),
+    );
+  } catch {
+    /* the viewer shows its own "couldn't load" state */
+  }
 }

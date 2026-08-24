@@ -57,7 +57,9 @@ resolve to the same name.
 ## The pathologist app
 
 Three routes, served by React Router so every screen is linkable and the
-browser Back button behaves:
+browser Back button behaves. Each route has a **loader** that fills the query
+cache before the screen renders, so a case opens with its data ready however
+you arrived — clicked from the worklist, opened from a bookmark, or reloaded:
 
 | Route | Screen |
 | --- | --- |
@@ -167,7 +169,7 @@ Restart the dev server after changing it.
 
 - **TypeScript** across all three packages, in strict mode
 - **React 18** + **Vite 7** + **Tailwind CSS 4**
-- **React Router 7** — real routes and deep links
+- **React Router 7** — real routes, deep links, and data loaders
 - **TanStack Query 5** — server state, caching, and background refetching
 - **OpenSeadragon 6** — deep-zoom slide rendering
 - **Fabric.js 7** — the annotation canvas
@@ -183,7 +185,7 @@ Restart the dev server after changing it.
 | File | Responsibility |
 | --- | --- |
 | `main.tsx` | Entry point — mounts React and the query client. |
-| `App.tsx` | Routes, the auth gate, and the login screen switch. |
+| `App.tsx` | Routes and their loaders, the auth gate, and the login screen switch. |
 | `TelepathologyDashboard.tsx` | The three screens and the state they share. |
 | `WsiViewer.tsx` | Slide viewer, annotation engine, scale bar, and save API. |
 | `annotations.ts` | Converting fabric objects to and from image coordinates. |
