@@ -22,7 +22,8 @@
  *   PORT, TILE_PORT      — ports for this server and the tile service
  *   JWT_SECRET           — token signing key; REQUIRED when NODE_ENV=production
  *   ALLOWED_ORIGINS      — comma-separated CORS allow-list
- *   DB_FILE, UPLOADS_DIR — relocate state (the test suite uses this)
+ *   DATABASE_URL         — PostgreSQL connection string; REQUIRED
+ *   UPLOADS_DIR          — relocate uploaded slides (the test suite uses this)
  *   BACKUP_DIR, BACKUP_KEEP, BACKUP_INTERVAL_MS
  *   PYTHON               — python executable name, if not "python"
  *   SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS, MAIL_FROM
@@ -53,7 +54,6 @@ import { isMailConfigured, sendResetCodeEmail, verifyMailer } from './mailer.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-await db.migrateLegacyJson();          // bring across any existing data.json on first run
 await db.failStaleProcessingSlides();  // no one is converting slides left over from a previous run
 
 const app = express();

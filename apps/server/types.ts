@@ -1,25 +1,27 @@
 /**
- * types.ts — the backend's domain types, and the contract both database
- * drivers must satisfy.
+ * types.ts — the backend's domain types, and the contract the data layer
+ * must satisfy.
  * ---------------------------------------------------------------------------
- * THE POINT OF THIS FILE is `DataDriver` at the bottom. There are two
- * implementations of the data layer — SQLite and PostgreSQL — and db.js picks
- * between them at startup. Nothing previously guaranteed the two actually
- * matched: a function missing from one, or returning a subtly different shape,
- * would only surface at runtime, on whichever database happened to be
- * configured. Declaring both `satisfies DataDriver` turns that into a compile
- * error instead.
+ * THE POINT OF THIS FILE is `DataDriver` at the bottom. It is the single
+ * written definition of everything the server may ask of the database, and
+ * postgres.ts asserts itself against it. That turns "this query exists and
+ * returns the shape callers expect" from something you hope is true into
+ * something the compiler checks.
  *
- * That is not hypothetical. During the PostgreSQL migration `authRequired`
- * called `getUserById` without awaiting it — harmless on synchronous SQLite,
- * but on PostgreSQL it produced a pending Promise that passed a truthiness
- * check meant to confirm the account still existed. Types describing the
- * driver as async would have rejected that at compile time.
+ * This contract earned its place. The data layer was once implemented twice,
+ * for SQLite and for PostgreSQL, and the interface is what caught the two
+ * implementations quietly diverging: an endpoint that returned the updated
+ * case on one and an empty body on the other, and backup pruning that ran on
+ * one but not the other. Both were invisible at runtime until you happened to
+ * be on the other database.
+ *
+ * It also documents why every function is async — see the note on the
+ * interface itself.
  *
  * NAMING NOTE: user rows come back in snake_case and case rows in camelCase.
- * That is inherited from the original SQLite queries — auth.js reads
+ * That is inherited from the original hand-written SQL — auth.ts reads
  * `password_hash`, while the front-ends read `chcName`. It is inconsistent,
- * but it is the EXISTING contract, and both drivers must match it exactly.
+ * but it is the EXISTING contract that the browsers already depend on.
  */
 
 // --- Users --------------------------------------------------------------------
@@ -154,10 +156,12 @@ export interface BackupResult {
 /**
  * Every function the rest of the server may call on the data layer.
  *
- * All of them return promises. The SQLite driver is actually synchronous, but
- * declaring the contract as async is what lets one set of call sites serve
- * both databases — awaiting a synchronous value is harmless, whereas failing
- * to await a real promise is the bug described at the top of this file.
+ * All of them return promises, because the `pg` client is asynchronous. That
+ * matters more than it looks: a missed `await` leaves you holding a pending
+ * Promise, which is truthy, so a guard like `if (!user)` passes for a user who
+ * does not exist. That is exactly what happened in `authRequired` once, where
+ * a deleted account would have been treated as signed in. Declaring the whole
+ * contract async is what lets the compiler catch it.
  */
 export interface DataDriver {
   // Users
@@ -177,11 +181,10 @@ export interface DataDriver {
   createCase(data: NewCaseInput, user: UserRow): Promise<number>;
   touchCase(id: number | string): Promise<void>;
   /**
-   * Returns the updated case so the archive endpoint can echo it back. Both
-   * drivers must return it: the PostgreSQL one originally returned nothing,
-   * which meant the same endpoint replied with a case on SQLite and with an
-   * empty body on PostgreSQL. That is precisely the divergence this contract
-   * exists to prevent.
+   * Returns the updated case, because the archive endpoint echoes it straight
+   * back to the browser. Declaring that here is not decoration: an earlier
+   * implementation wrote the row and returned nothing, so the endpoint replied
+   * with an empty body. The return type is what makes that a compile error.
    */
   setCaseArchived(id: number | string, archived?: boolean): Promise<CaseMeta | null>;
 
@@ -210,7 +213,6 @@ export interface DataDriver {
 
   // Maintenance
   backupDatabase(dir: string, keep?: number): Promise<BackupResult>;
-  migrateLegacyJson(): Promise<void>;
 }
 
 // --- Express augmentation --------------------------------------------------

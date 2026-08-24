@@ -6,10 +6,13 @@
  * Uses node:test and node:assert (both built into Node) so there is no test
  * framework to install. The server is started as a real child process against
  * a THROWAWAY database and uploads directory, so nothing here can touch real
- * patient data — see the env vars in `startServer()`.
+ * patient data — see `resolveTestDatabase()` below for how that is enforced.
  *
  * Run with:  npm test -w apps/server
  */
+// Reads apps/server/.env so the suite can find PostgreSQL. It derives its own
+// throwaway database name from that connection string — see resolveTestDatabase.
+import 'dotenv/config';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -17,6 +20,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import pg from 'pg';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(__dirname, '..', 'server.ts');
@@ -56,18 +60,58 @@ const api = async (
 
 const uniqueEmail = (p: string) => `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@test.local`;
 
+/**
+ * Work out which database to test against, and make sure it exists.
+ *
+ * THE IMPORTANT PART is that this can never be the developer's real database.
+ * apps/server/.env sets DATABASE_URL for normal development, and dotenv would
+ * happily apply it here too — so these tests would create, archive and delete
+ * rows in the actual patient database. Instead the name is derived with a
+ * `_test` suffix (or taken from TEST_DATABASE_URL), and the assertion below
+ * refuses to run if that somehow resolves back to the real one.
+ */
+async function resolveTestDatabase(): Promise<string> {
+  const real = process.env.DATABASE_URL;
+  if (!process.env.TEST_DATABASE_URL && !real) {
+    throw new Error(
+      'Neither TEST_DATABASE_URL nor DATABASE_URL is set. Point one at PostgreSQL, '
+      + 'for example postgresql://postgres:password@localhost:5432/telepathology',
+    );
+  }
+
+  let testUrl = process.env.TEST_DATABASE_URL;
+  if (!testUrl) {
+    const u = new URL(real!);
+    u.pathname = `${u.pathname.replace(/^\//, '')}_test`;
+    testUrl = u.toString();
+  }
+
+  if (real) {
+    const nameOf = (s: string) => new URL(s).pathname.replace(/^\//, '');
+    assert.notEqual(nameOf(testUrl), nameOf(real),
+      'refusing to run the suite against the real database');
+  }
+
+  // Create the throwaway database if it is not there yet, so `npm test` works
+  // on a fresh checkout without a manual setup step. Connecting requires an
+  // existing database, hence the detour via the default `postgres` one.
+  const admin = new URL(testUrl);
+  const dbName = admin.pathname.replace(/^\//, '');
+  admin.pathname = '/postgres';
+  const client = new pg.Client({ connectionString: admin.toString() });
+  await client.connect();
+  try {
+    const { rowCount } = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [dbName]);
+    if (!rowCount) await client.query(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await client.end();
+  }
+  return testUrl;
+}
+
 before(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pv-test-'));
-  // Which database the suite exercises:
-  //   default          → SQLite, in the throwaway directory below
-  //   TEST_DATABASE_URL → that PostgreSQL database instead
-  //
-  // DATABASE_URL is cleared explicitly and deliberately. apps/server/.env sets
-  // it for normal development, and dotenv would apply it here too — meaning
-  // these tests would create, archive and delete rows in the developer's REAL
-  // patient database. Opting in via a separate variable makes running against
-  // PostgreSQL a conscious act, and never the accidental default.
-  const testDatabaseUrl = process.env.TEST_DATABASE_URL || '';
+  const testDatabaseUrl = await resolveTestDatabase();
 
   proc = spawn(process.execPath, [SERVER], {
     env: {
@@ -76,7 +120,6 @@ before(async () => {
       TILE_PORT: '3299',
       DATABASE_URL: testDatabaseUrl,
       // Point every piece of on-disk state at the throwaway directory.
-      DB_FILE: path.join(tmpDir, 'test.db'),
       UPLOADS_DIR: path.join(tmpDir, 'uploads'),
       BACKUP_DIR: path.join(tmpDir, 'backups'),
       BACKUP_INTERVAL_MS: String(24 * 60 * 60 * 1000),

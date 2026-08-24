@@ -1,13 +1,14 @@
 /**
- * schema.js — the database shape, declared once for PostgreSQL.
+ * schema.ts — the database shape, declared once.
  * ---------------------------------------------------------------------------
- * This mirrors the SQLite schema in db.js exactly, table for table and column
- * for column, so the same application code can run against either backend.
- * Where the two databases genuinely differ, the difference is noted inline.
+ * Drizzle table definitions for every table the server uses. These give the
+ * queries in postgres.ts their column types, so a typo in a column name or a
+ * comparison against the wrong type is a compile error rather than a runtime
+ * one.
  *
- * Only used when DATABASE_URL is set. Without it the server keeps using the
- * SQLite file, so the project still runs on a machine with no PostgreSQL —
- * see drivers/ for how that choice is made.
+ * The tables themselves are created by `init()` in postgres.ts, which runs
+ * plain `CREATE TABLE IF NOT EXISTS` on every startup. This file describes
+ * that shape to TypeScript; it does not create anything on its own.
  */
 import {
   pgTable, serial, integer, text, boolean, bigint,
@@ -34,7 +35,7 @@ export const users = pgTable('users', {
   // they were minted with, so raising it invalidates every existing token.
   tokenVersion: integer('token_version').notNull().default(0),
 }, (t) => ({
-  // Postgres has no SQLite-style "COLLATE NOCASE" on the column, so
+  // Postgres has no case-insensitive column collation built in, so
   // case-insensitivity is enforced by indexing lower(email) instead.
   emailRoleUnique: uniqueIndex('users_email_role_unique').on(t.email, t.role),
 }));

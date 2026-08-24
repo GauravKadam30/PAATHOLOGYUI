@@ -20,6 +20,16 @@ This repository is an **npm workspace** (monorepo) with three packages under
 npm install
 ```
 
+The backend needs PostgreSQL. Install it, then create the database once:
+
+```bash
+psql -U postgres -c "CREATE DATABASE telepathology"
+```
+
+Copy `apps/server/.env.example` to `apps/server/.env` and set `DATABASE_URL` to
+point at it. Tables are created automatically on first boot, so there is no
+migration step to run.
+
 Then run the API and whichever front-end you need, each in its own terminal:
 
 ```bash
@@ -28,9 +38,9 @@ npm run dev -w apps/pathology-viewer    # viewer on http://localhost:5173
 npm run dev -w apps/chc-intake          # intake — Vite takes the next free port
 ```
 
-Nothing else needs installing to get going — the backend defaults to a local
-SQLite file, so there is no database to set up. (Whole-slide `.tiff` viewing is
-the one exception; see [Whole-slide images](#whole-slide-images) below.)
+Whole-slide `.tiff` viewing additionally needs Python and OpenSlide — see
+[Whole-slide images](#whole-slide-images) below. Everything else works without
+it.
 
 Root-level scripts run across every workspace:
 
@@ -39,6 +49,10 @@ npm run build       # production builds
 npm run typecheck   # TypeScript across all three packages
 npm test            # backend API test suite
 ```
+
+`npm test` never touches your real data. It derives a separate `_test` database
+from `DATABASE_URL`, creates it if missing, and refuses to run if the two ever
+resolve to the same name.
 
 ## The pathologist app
 
@@ -94,30 +108,24 @@ different sections of one case) cannot overwrite each other.
   Deep Zoom tiles by a supervised Python child process.
 - **Backups** — a database snapshot at startup and then daily.
 
-### Database: SQLite by default, PostgreSQL when you want it
+### Database
 
-The data layer has two interchangeable drivers and picks between them at
-startup based on one environment variable:
+**PostgreSQL**, accessed through **Drizzle ORM**. All the SQL lives in one file
+(`apps/server/postgres.ts`) and nothing above it builds a query.
 
-| `DATABASE_URL` | Driver |
-| --- | --- |
-| unset (default) | **SQLite** — a local `data.db` file, nothing to install. |
-| set | **PostgreSQL** via Drizzle ORM. |
+`DATABASE_URL` is required — the server exits with an explanatory message
+rather than starting in a half-working state. Schema creation happens on every
+boot with `CREATE TABLE IF NOT EXISTS`, so a fresh database is usable straight
+away and an existing one is left alone.
 
-Both are first-class: the same test suite runs green against either. A shared
-TypeScript interface (`apps/server/types.ts`) forces the two drivers to expose
-identical functions and return shapes, so they cannot quietly drift apart.
+The set of queries the rest of the server may call is declared once as a
+TypeScript interface (`DataDriver` in `apps/server/types.ts`), which
+`postgres.ts` asserts itself against. Adding a query means declaring it there
+too, so the interface stays an accurate description of the data layer rather
+than drifting out of date.
 
-To switch to PostgreSQL, create the database, set `DATABASE_URL` in
-`apps/server/.env` (see `.env.example`), and copy any existing data across:
-
-```bash
-node tools/migrate-sqlite-to-postgres.js --dry-run   # preview
-node tools/migrate-sqlite-to-postgres.js             # copy
-```
-
-The migration only ever reads the SQLite file, so it stays intact and usable as
-a fallback.
+Backups run at startup and then daily, via `pg_dump`, keeping the newest seven.
+Set `PG_DUMP` if it is not on PATH — the Windows installer does not add it.
 
 ### Whole-slide images
 
@@ -137,8 +145,8 @@ unaffected, and only `.tiff` viewing is unavailable.
 
 ### Configuration
 
-Copy `apps/server/.env.example` to `apps/server/.env`. Every value is optional;
-the file documents what each one does. Two worth knowing about:
+Copy `apps/server/.env.example` to `apps/server/.env`. `DATABASE_URL` is the
+only required value; the file documents the rest. Two worth knowing about:
 
 - `JWT_SECRET` — **required** when `NODE_ENV=production`; the server refuses to
   start without it rather than fall back to a key published in this repository.
@@ -164,7 +172,7 @@ Restart the dev server after changing it.
 - **OpenSeadragon 6** — deep-zoom slide rendering
 - **Fabric.js 7** — the annotation canvas
 - **Express 4** on **Node 24**
-- **SQLite** (`node:sqlite`) or **PostgreSQL** (**Drizzle ORM**)
+- **PostgreSQL** with **Drizzle ORM**
 - **OpenSlide** — reading gigapixel scanner formats
 - **lucide-react** — icons
 
@@ -189,11 +197,10 @@ Restart the dev server after changing it.
 | --- | --- |
 | `server.ts` | The route table — which URL does what, and who may call it. |
 | `auth.ts` | Password hashing, token issuing, and the `authRequired` guard. |
-| `types.ts` | Domain types and the `DataDriver` contract both drivers implement. |
-| `db.ts` | Picks a driver at startup based on `DATABASE_URL`. |
-| `drivers/sqlite.ts` | The SQLite implementation, including schema migrations. |
-| `drivers/postgres.ts` | The PostgreSQL implementation, via Drizzle. |
+| `types.ts` | Domain types and the `DataDriver` contract the data layer implements. |
+| `db.ts` | Opens the database, creates missing tables, re-exports the data API. |
+| `postgres.ts` | Every SQL query in the project, written with Drizzle. |
 | `schema.ts` | Drizzle table definitions. |
 | `mailer.ts` | Sending password-reset codes over SMTP. |
 | `tools/tile_server.py` | On-demand Deep Zoom tiling of whole-slide files. |
-| `test/api.test.ts` | API test suite; runs against either database. |
+| `test/api.test.ts` | API test suite; runs against a throwaway database it creates. |

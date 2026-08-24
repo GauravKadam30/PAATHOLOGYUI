@@ -1,19 +1,19 @@
 /**
- * drivers/postgres.js — the PostgreSQL data layer.
+ * postgres.ts — the PostgreSQL data layer.
  * ---------------------------------------------------------------------------
- * Exports exactly the same function names as drivers/sqlite.js, so db.js can
- * swap between them without a single call site changing. The difference is
- * that everything here is genuinely asynchronous (the `pg` driver returns
- * promises), which is why every caller awaits — awaiting SQLite's synchronous
- * return value is harmless, so one set of call sites serves both.
+ * All the SQL in the project lives here, written with Drizzle ORM. Nothing
+ * above this file builds a query, and nothing here knows about HTTP.
  *
- * Active only when DATABASE_URL is set. See db.js for the selection logic.
+ * Every export is asynchronous, because the `pg` client is, and the set of
+ * exports is pinned by the DataDriver interface in types.ts (asserted at the
+ * bottom of this file). Callers reach it through db.ts, which opens the
+ * connection and creates any missing tables before re-exporting all of this.
  *
- * Row shapes returned here match the SQLite driver's exactly — snake_case for
- * user records (the auth code reads `password_hash`, `token_version`), and
- * camelCase for case records (the frontend reads `chcName`, `dziUrl`). That
- * inconsistency is inherited, not introduced; matching it is what keeps the
- * two drivers interchangeable.
+ * NAMING: user records come back in snake_case (the auth code reads
+ * `password_hash` and `token_version` straight off the row) while case records
+ * come back in camelCase (the browsers read `chcName`, `dziUrl`). That
+ * inconsistency is inherited from the original hand-written SQL rather than
+ * introduced here, and the front-ends already depend on it.
  */
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { eq, and, gt, sql } from 'drizzle-orm';
@@ -21,11 +21,11 @@ import pg from 'pg';
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import * as schema from '../schema.ts';
+import * as schema from './schema.ts';
 import type {
   DataDriver, UserRow, NewUser, CaseMeta, CaseFull, NewCaseInput, ListCasesOptions,
   NotesByCase, AnnotationData, AnnotationsByCase, ResetCodeRow, BackupResult,
-} from '../types.ts';
+} from './types.ts';
 
 const { users, cases, caseNotes, caseAnnotations, resetCodes, kv } = schema;
 
@@ -38,9 +38,8 @@ const db = drizzle(pool, { schema });
  * Create the tables if they don't exist.
  *
  * Written as plain SQL rather than generated migration files so that a fresh
- * database becomes usable on first boot with no extra command to remember —
- * matching how the SQLite driver behaves. `IF NOT EXISTS` throughout makes it
- * safe to run on every startup.
+ * database becomes usable on first boot with no extra command to remember.
+ * `IF NOT EXISTS` throughout makes it safe to run on every startup.
  */
 export async function init(): Promise<void> {
   await pool.query(`
@@ -55,7 +54,7 @@ export async function init(): Promise<void> {
       token_version INTEGER NOT NULL DEFAULT 0
     );
     -- Case-insensitive uniqueness per (email, role). Postgres has no
-    -- SQLite-style NOCASE collation on the column, so the index lowercases.
+    -- case-insensitive column collation, so the index lowercases instead.
     CREATE UNIQUE INDEX IF NOT EXISTS users_email_role_unique
       ON users (lower(email), role);
 
@@ -118,8 +117,8 @@ export async function init(): Promise<void> {
 }
 
 // --- Users -------------------------------------------------------------------
-// Returned in snake_case to match the SQLite driver, because auth.js reads
-// `password_hash` and `token_version` straight off these rows.
+// Returned in snake_case because auth.ts reads `password_hash` and
+// `token_version` straight off these rows.
 const toUserRow = (r: typeof users.$inferSelect | undefined): UserRow | undefined => r ? ({
   id: r.id,
   email: r.email,
@@ -265,8 +264,8 @@ export async function setCaseArchived(id: number | string, archived = true): Pro
   await db.update(cases)
     .set({ archived: !!archived, updatedAt: new Date().toISOString() })
     .where(eq(cases.id, Number(id)));
-  // The endpoint echoes the updated case back to the browser, so return it
-  // here exactly as the SQLite driver does.
+  // The archive endpoint echoes the updated case straight back to the browser,
+  // so it has to be returned here rather than just written.
   return getCaseMeta(id);
 }
 
@@ -407,8 +406,8 @@ export async function setKV(key: string, value: unknown): Promise<void> {
 /**
  * Back up the database with `pg_dump`.
  *
- * PostgreSQL has no equivalent of SQLite's single-file online backup API, so
- * this shells out to the standard tool. If pg_dump isn't on PATH the failure
+ * There is no in-process API for a consistent snapshot, so this shells out to
+ * the standard tool. If pg_dump isn't on PATH the failure
  * is reported rather than thrown — a missing backup must not stop the server
  * from serving patients.
  */
@@ -449,8 +448,8 @@ export async function backupDatabase(dir: string, keep = 7): Promise<BackupResul
     proc.on('exit', (code: number | null) => {
       if (code !== 0) return reject(new Error(`pg_dump exited with ${code}: ${stderr.trim()}`));
 
-      // Prune old dumps, matching the SQLite driver's retention. Without this
-      // a nightly backup would grow the folder forever.
+      // Prune old dumps. Without this a nightly backup grows the folder
+      // forever, which on an 11 MB dump adds up quickly.
       const backups = fs.readdirSync(dir).filter((f) => /^data-.*\.sql$/.test(f)).sort().reverse();
       for (const old of backups.slice(keep)) {
         try { fs.unlinkSync(path.join(dir, old)); } catch { /* already gone */ }
@@ -459,9 +458,6 @@ export async function backupDatabase(dir: string, keep = 7): Promise<BackupResul
     });
   });
 }
-
-/** Nothing to migrate from the old data.json here — that path is SQLite-only. */
-export async function migrateLegacyJson(): Promise<void> { /* no-op on PostgreSQL */ }
 
 /** Close the pool cleanly (used by the test suite). */
 export async function close(): Promise<void> { await pool.end(); }
