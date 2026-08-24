@@ -16,16 +16,12 @@ dist-ssr
 # Windows/Linux. Each machine creates its own on `npm install`.
 package-lock.json
 
-# Backend data store (created at runtime) and local env files
-data.json
-data.json.migrated
-data.db
-data.db-wal
-data.db-shm
+# Local environment files — these hold the database password and SMTP
+# credentials. apps/server/.env.example documents every value without them.
 .env
 
-# Uploaded whole-slide files (can run to many GB) and backup dumps —
-# runtime data, not source. Same reasoning as data.db above.
+# Runtime data, not source: uploaded whole-slide files (many GB each) and the
+# pg_dump snapshots taken at startup and daily.
 apps/server/uploads
 apps/server/backups
 
