@@ -38,11 +38,12 @@ import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallba
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import OpenSeadragon from 'openseadragon';                 // deep-zoom slide viewer
 import * as FabricModule from 'fabric';                    // 2D canvas drawing library
-import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X, Loader2 } from 'lucide-react'; // control icons
+import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X, Loader2, List, Crosshair, Square, Circle, PenLine } from 'lucide-react'; // control icons
 // URL helpers and the on-demand flattener live in annotations.js, which owns
 // everything about how marks are stored and rendered.
-import { resolveImageUrl, resolveDziUrl, renderAnnotatedImage } from './annotations';
-import { fetchSlideInfo } from './api';                    // scanner calibration (microns per pixel)
+import { resolveImageUrl, resolveDziUrl, renderAnnotatedImage, listAnnotations } from './annotations';
+import type { AnnotationSummary } from './annotations';
+import { fetchSlideInfo, authHeaders } from './api';        // scanner calibration + auth for tile requests
 import type { Case, AnnotationData, SlideInfo } from './types';
 
 // fabric v7 has no named `fabric` export, so we use the whole module namespace.
@@ -260,6 +261,56 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
   // Keeps the fabric canvas aligned with the slide: annotations live in image
   // pixel coordinates, and this maps them to the screen on every pan/zoom so
   // saved shapes stick to the tissue they were drawn on.
+  // --- Annotation list ------------------------------------------------------
+  // Marks live in image coordinates, so one drawn at 20x is only a few screen
+  // pixels once the whole slide is in view — on this scanner's output a 100 µm
+  // lesion is about 3 px wide zoomed out. Finding them by eye is impractical,
+  // so they are listed and each row flies the viewer to its mark.
+  const [marks, setMarks] = useState<AnnotationSummary[]>([]);
+  const [listOpen, setListOpen] = useState(false);
+
+  /** Re-read the canvas into the list. Cheap — it walks the saved JSON only. */
+  const refreshMarks = useCallback(() => {
+    const canvas = fabricRef.current;
+    setMarks(canvas ? listAnnotations(canvas.toJSON() as AnnotationData) : []);
+  }, []);
+
+  /**
+   * Fly the viewer to one mark.
+   *
+   * Padded to 40% of the mark's larger side so it lands framed rather than
+   * filling the screen edge to edge, and so a tiny mark still arrives at a
+   * sensible zoom instead of magnifying to a blur.
+   */
+  const goToMark = useCallback((m: AnnotationSummary) => {
+    const viewer = viewerRef.current;
+    const item = viewer?.world?.getItemAt(0);
+    if (!viewer || !item) return;
+    const pad = Math.max(m.box.width, m.box.height) * 0.4 || 50;
+    const rect = item.imageToViewportRectangle(new OpenSeadragon.Rect(
+      m.box.left - pad, m.box.top - pad,
+      m.box.width + pad * 2, m.box.height + pad * 2,
+    ));
+    viewer.viewport.fitBounds(rect, false);   // false = animate the flight
+  }, []);
+
+  // Keep the list in step with the canvas. Fabric fires these for adds, edits
+  // and erases alike, so one set of handlers covers every way marks change.
+  useEffect(() => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+    const update = () => refreshMarks();
+    canvas.on('object:added', update);
+    canvas.on('object:removed', update);
+    canvas.on('object:modified', update);
+    update();
+    return () => {
+      canvas.off('object:added', update);
+      canvas.off('object:removed', update);
+      canvas.off('object:modified', update);
+    };
+  }, [refreshMarks, savedAnnotations, caseData.id]);
+
   const syncViewport = useCallback(() => {
     const viewer = viewerRef.current;
     const canvas = fabricRef.current;
@@ -311,6 +362,13 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
       // The default sprite-image buttons are replaced by our own styled
       // controls rendered in JSX below.
       showNavigationControl: false,
+      // Tiles are patient data, so /slides/* requires a signed-in account.
+      // OpenSeadragon normally loads tiles by assigning image URLs, and an
+      // <img> cannot carry an Authorization header — every tile would come
+      // back 401. Switching to AJAX makes it fetch them with XHR instead, so
+      // the same token used everywhere else can be attached.
+      loadTilesWithAjax: true,
+      ajaxHeaders: authHeaders(),
     });
 
     // 'open' fires once the slide image has loaded.
@@ -371,6 +429,10 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
         if (cancelled || fabricRef.current !== canvas) return;
         syncViewport();          // loadFromJSON resets the transform
         canvas.renderAll();
+        // Explicit: loadFromJSON populates the canvas in bulk without firing
+        // an `object:added` per shape, so the list would stay empty on a case
+        // that already has saved marks — exactly the case worth listing.
+        refreshMarks();
       }).catch(() => { /* corrupt saved data — start clean rather than break */ });
     }
 
@@ -773,6 +835,62 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
           </div>
         </div>
       )}
+
+      {/* --- Annotation list ---------------------------------------------------
+          A mark drawn at 40x is a handful of pixels once the slide is zoomed
+          out, so hunting for it by eye is hopeless on a 135,000 px wide scan.
+          Listing the marks and flying to them on click is how desktop
+          pathology software (QuPath, ASAP) solves the same problem.
+
+          Placed top-right, which is free except in full screen — where the
+          exit button sits — so it shifts down there rather than overlapping. */}
+      <div className={`absolute ${isFullPage ? 'top-20' : 'top-4'} right-4 z-[70] w-60 max-w-[calc(100%-2rem)]`}>
+        <button
+          onClick={() => setListOpen((v) => !v)}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-900/80 backdrop-blur text-slate-200 text-xs font-semibold ring-1 ring-slate-700/60 shadow-lg hover:bg-slate-800 hover:text-white transition-all"
+        >
+          <List className="w-3.5 h-3.5 shrink-0" />
+          <span>Annotations</span>
+          <span className="ml-auto mono tabular-nums text-indigo-300">{marks.length}</span>
+        </button>
+
+        {listOpen && (
+          <div className="mt-1.5 rounded-xl bg-slate-900/90 backdrop-blur ring-1 ring-slate-700/60 shadow-lg overflow-hidden">
+            {marks.length === 0 ? (
+              <p className="px-3 py-3 text-[11px] text-slate-400 leading-relaxed">
+                No marks yet. Enable annotation and draw on the slide.
+              </p>
+            ) : (
+              <ul className="max-h-64 overflow-y-auto divide-y divide-slate-800">
+                {marks.map((m) => {
+                  const Icon = m.kind === 'Rectangle' ? Square : m.kind === 'Oval' ? Circle : PenLine;
+                  // Size in microns where the scanner calibrated the slide,
+                  // otherwise in pixels — never a guessed measurement.
+                  const longest = Math.max(m.box.width, m.box.height);
+                  const size = slideInfo?.mppX
+                    ? `${Math.round(longest * slideInfo.mppX)} µm`
+                    : `${Math.round(longest)} px`;
+                  return (
+                    <li key={m.index}>
+                      <button
+                        onClick={() => goToMark(m)}
+                        title="Zoom to this annotation"
+                        className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-slate-800/80 transition-colors group"
+                      >
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0 ring-1 ring-white/20" style={{ background: m.color }} />
+                        <Icon className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                        <span className="text-[11px] text-slate-200 font-medium">{m.kind}</span>
+                        <span className="ml-auto mono text-[10px] text-slate-400 tabular-nums">{size}</span>
+                        <Crosshair className="w-3 h-3 text-slate-600 group-hover:text-indigo-300 shrink-0 transition-colors" />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Prominent exit affordance while in full screen. */}
       {isFullPage && (

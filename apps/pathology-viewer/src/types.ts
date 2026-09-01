@@ -13,7 +13,17 @@
  */
 
 /** Which portal an account belongs to. The same email may hold one of each. */
-export type Role = 'lab_attendant' | 'pathologist';
+export type Role = 'lab_attendant' | 'pathologist' | 'physician';
+
+/**
+ * What each role may edit on the report screen. The server enforces the same
+ * rules; this exists so the UI can disable rather than let someone type into a
+ * box whose save will be refused.
+ */
+export const CAN_EDIT: Record<string, { findings: boolean; prescription: boolean; annotate: boolean; sign: boolean }> = {
+  pathologist: { findings: true, prescription: false, annotate: true, sign: false },
+  physician: { findings: false, prescription: true, annotate: false, sign: true },
+};
 
 /** A signed-in account, as returned by /api/auth/* (never includes the hash). */
 export interface User {
@@ -80,6 +90,11 @@ export interface Case {
   /** Archived cases are hidden from the worklist but not deleted. */
   archived?: boolean;
   updatedAt?: string | null;
+
+  /** Set when a physician signs the report; null while the case is pending. */
+  reportedAt?: string | null;
+  /** Name of the physician who signed it. */
+  reportedBy?: string | null;
 }
 
 /** The three independently-saved note sections on the report page. */

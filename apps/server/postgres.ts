@@ -81,8 +81,15 @@ export async function init(): Promise<void> {
       slide_status TEXT,
       slide_error  TEXT,
       archived     BOOLEAN NOT NULL DEFAULT FALSE,
-      updated_at   TEXT
+      updated_at   TEXT,
+      reported_at  TEXT,
+      reported_by  TEXT
     );
+    -- Added after the table already existed in the field, so IF NOT EXISTS on
+    -- the CREATE above would not have introduced them.
+    ALTER TABLE cases ADD COLUMN IF NOT EXISTS reported_at TEXT;
+    ALTER TABLE cases ADD COLUMN IF NOT EXISTS reported_by TEXT;
+
     CREATE INDEX IF NOT EXISTS idx_cases_status  ON cases (status);
     CREATE INDEX IF NOT EXISTS idx_cases_updated ON cases (updated_at);
 
@@ -186,6 +193,8 @@ const toCaseMeta = (r: typeof cases.$inferSelect): CaseMeta => ({
   slideError: r.slideError ?? null, archived: !!r.archived,
   updatedAt: r.updatedAt ?? null,
   hasImage: !!(r.image && r.image !== ''),
+  reportedAt: r.reportedAt ?? null,
+  reportedBy: r.reportedBy ?? null,
 });
 
 export async function listCases({ since, includeArchived = false }: ListCasesOptions = {}): Promise<CaseMeta[]> {
@@ -258,6 +267,31 @@ export async function createCase(data: NewCaseInput, user: UserRow): Promise<num
 export async function touchCase(id: number | string): Promise<void> {
   await db.update(cases).set({ updatedAt: new Date().toISOString() })
     .where(eq(cases.id, Number(id)));
+}
+
+/**
+ * Sign off a case as reported.
+ *
+ * Writes three things together: the status the worklist filters on, when it
+ * was signed, and WHO signed it. The signer's name is copied in rather than
+ * stored as a user id, because a report is a clinical record — it must still
+ * read correctly years later even if that account is renamed or removed.
+ *
+ * `updatedAt` is bumped too, so the change reaches other pathologists on the
+ * next incremental poll instead of waiting for a full refresh.
+ */
+export async function signCaseReport(id: number | string, userId: number): Promise<CaseMeta | null> {
+  const signer = await getUserById(userId);
+  const now = new Date().toISOString();
+  await db.update(cases)
+    .set({
+      status: 'Reported',
+      reportedAt: now,
+      reportedBy: signer?.full_name ?? 'Unknown',
+      updatedAt: now,
+    })
+    .where(eq(cases.id, Number(id)));
+  return getCaseMeta(id);
 }
 
 export async function setCaseArchived(id: number | string, archived = true): Promise<CaseMeta | null> {

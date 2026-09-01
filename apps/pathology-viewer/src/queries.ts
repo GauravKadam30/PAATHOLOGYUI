@@ -27,7 +27,7 @@ import {
 } from '@tanstack/react-query';
 import {
   getCases, getAllNotes, getAllAnnotations, apiGet,
-  saveNote, saveAnnotations, setCaseArchived, getCaseImage,
+  saveNote, saveAnnotations, setCaseArchived, getCaseImage, signCaseReport,
 } from './api';
 import type {
   Case, NotesByCase, AnnotationsByCase, AnnotationData, NoteKind,
@@ -200,6 +200,26 @@ export function useSaveAnnotations() {
         ...(prev ?? {}),
         [caseId]: data ?? {},
       }));
+    },
+  });
+}
+
+/**
+ * Sign off a report.
+ *
+ * The server returns the updated case, so it is written straight into the
+ * cached list. That makes the row move from Pending to Reported immediately
+ * rather than on the next four-second poll — pressing the most consequential
+ * button in the app should not appear to do nothing for a few seconds.
+ */
+export function useSignReport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ caseId }: { caseId: number }) => signCaseReport(caseId),
+    onSuccess: (updated) => {
+      qc.setQueryData<Case[]>(keys.cases, (prev) =>
+        (prev ?? []).map((c) => (c.id === updated.id ? { ...c, ...updated } : c)),
+      );
     },
   });
 }

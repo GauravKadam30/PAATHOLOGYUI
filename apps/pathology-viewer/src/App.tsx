@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import TelepathologyDashboard from './TelepathologyDashboard';
 import Login from './Login';
-import { getMe, getToken, logout } from './api';
+import { getMe, getToken, logout, PHYSICIAN_PATH } from './api';
 import {
   casesQueryOptions, notesQueryOptions, annotationsQueryOptions,
   legacyImagesQueryOptions, loadCaseImage, resetCasesWatermark,
@@ -152,6 +152,12 @@ function Router({ user, onLogout }: { user: User; onLogout: () => void }) {
       element: <CaseScreen user={user} onLogout={onLogout} view="details" />,
       HydrateFallback: RouteFallback,
     },
+    // The physician portal is the SAME screens under a different address. It
+    // exists so that signing in at /physician creates a physician account
+    // rather than a pathologist one; after that the role comes from the
+    // server. Redirecting here keeps one set of route definitions instead of
+    // duplicating the worklist and report screens per role.
+    { path: PHYSICIAN_PATH, loader: () => redirect('/queue'), element: null },
     // Anything unrecognised (including "/") lands on the worklist.
     { path: '*', loader: () => redirect('/queue'), element: null },
   ]), [user, onLogout]);
@@ -182,15 +188,22 @@ function App() {
   // function each render would rebuild the route table — discarding the
   // router's navigation state — every time App re-renders.
   const handleLogout = useCallback(() => {
+    const wasPhysician = user?.role === 'physician';
     logout();
     setUser(null);
+    // Send them back to the door they came in by. Without this a physician who
+    // signs out lands on /queue, and the login form there would create a
+    // PATHOLOGIST account the next time they sign up.
+    if (wasPhysician && !window.location.pathname.startsWith(PHYSICIAN_PATH)) {
+      window.history.replaceState({}, '', PHYSICIAN_PATH);
+    }
     // Drop any cached patient data — the next person to sign in on this
     // machine must not see the previous user's worklist from cache. The
     // incremental-poll position goes with it, or the next account would ask
     // for changes since the previous one's watermark and receive nothing.
     queryClient.clear();
     resetCasesWatermark();
-  }, []);
+  }, [user]);
 
   if (authChecking) return <RouteFallback />;
 

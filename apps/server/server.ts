@@ -45,7 +45,7 @@ import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
 import * as db from './db.ts';
-import type { Role } from './types.ts';
+import { NOTE_WRITERS, type Role } from './types.ts';
 import {
   hashPassword, verifyPassword, signToken, authRequired, publicUser,
   generateResetCode, hashResetCode, verifyResetCode,
@@ -63,11 +63,16 @@ const app = express();
 // was a bare cors() (any origin), which meant any website a signed-in user
 // visited could issue requests against the API with their session.
 // ALLOWED_ORIGINS overrides the defaults when the apps run somewhere else.
-const DEFAULT_ORIGINS = [
-  'http://localhost:5173', 'http://localhost:5174',   // vite defaults
-  'http://localhost:5180', 'http://localhost:5182',   // the ports used here
-  'http://127.0.0.1:5180', 'http://127.0.0.1:5182',
-];
+// Vite picks the next FREE port when its preferred one is taken, so a second
+// dev server lands on 5174, a third on 5175, and so on. Listing only a couple
+// of ports meant a front-end that had shifted up was blocked by CORS — which
+// surfaces in the browser as a bare "Failed to fetch", with nothing in the
+// server log, and looks for all the world like the backend being down.
+// Covering the range removes a confusing failure that costs an hour to
+// diagnose. It is development-only: set ALLOWED_ORIGINS anywhere real and
+// this list is not consulted at all.
+const DEFAULT_ORIGINS = Array.from({ length: 16 }, (_, i) => 5173 + i)
+  .flatMap((port) => [`http://localhost:${port}`, `http://127.0.0.1:${port}`]);
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const originAllowList = ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS : DEFAULT_ORIGINS;
 app.use(cors({
@@ -111,8 +116,13 @@ setInterval(() => {
   for (const [k, v] of rateBuckets) if (now > v.resetAt) rateBuckets.delete(k);
 }, 60_000).unref();
 
-const authLimiter = rateLimit({ windowMs: 15 * 60_000, max: 20 });  // login/signup
-const resetLimiter = rateLimit({ windowMs: 15 * 60_000, max: 5 });  // password reset
+// Overridable so the test suite is not throttled by a defence aimed at people.
+// A run creates dozens of accounts in seconds, which is exactly the pattern the
+// limiter exists to stop — the limits are real in every other environment.
+const AUTH_RATE_MAX = Number(process.env.AUTH_RATE_MAX || 20);    // login/signup
+const RESET_RATE_MAX = Number(process.env.RESET_RATE_MAX || 5);   // password reset
+const authLimiter = rateLimit({ windowMs: 15 * 60_000, max: AUTH_RATE_MAX });
+const resetLimiter = rateLimit({ windowMs: 15 * 60_000, max: RESET_RATE_MAX });
 const uploadLimiter = rateLimit({ windowMs: 60 * 60_000, max: 30 }); // slide uploads
 
 // ===== Whole-slide images (WSI) =============================================
@@ -189,7 +199,7 @@ process.on('exit', () => {
 
 // Public tile routes — proxied straight through to the Python helper so the
 // browser only ever talks to this server (no second port, no extra CORS).
-app.get('/slides/:caseId/*', async (req, res) => {
+app.get('/slides/:caseId/*', authRequired, async (req, res) => {
   try {
     const upstream = await fetch(`${TILE_BASE}${req.originalUrl}`);
     res.status(upstream.status);
@@ -227,7 +237,7 @@ const upload = multer({
 // users table and these same routes — `role` is what keeps the two account
 // types apart. `chcName` only makes sense for a lab attendant (it's their
 // health centre); a pathologist isn't tied to one, so it's just stored empty.
-const ROLES: Role[] = ['lab_attendant', 'pathologist'];
+const ROLES: Role[] = ['lab_attendant', 'pathologist', 'physician'];
 
 // Sign up: creates an account. Lab attendants also give their CHC name;
 // pathologists just give a name, email and password.
@@ -272,14 +282,18 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   // same email + password is valid under the OTHER role, say so instead of
   // a generic error, so they know to use the other portal.
   if (role) {
-    const otherRole = ROLES.find((r) => r !== role);
-    const other = otherRole ? await db.getUserByEmailAndRole(trimmedEmail, otherRole) : undefined;
-    if (other && verifyPassword(password || '', other.password_hash)) {
-      return res.status(403).json({
-        error: other.role === 'lab_attendant'
-          ? 'This account is registered for the CHC Intake portal, not here.'
-          : 'This account is registered for the Pathology Console, not here.',
-      });
+    // Check EVERY other role, not just one. With three portals, testing a
+    // single arbitrary alternative would miss the account and fall through to
+    // "wrong password", which sends the user hunting for a typo that isn't
+    // there. The password is verified before revealing anything, so this
+    // cannot be used to discover which portals an email is registered on.
+    for (const otherRole of ROLES.filter((r) => r !== role)) {
+      const other = await db.getUserByEmailAndRole(trimmedEmail, otherRole);
+      if (other && verifyPassword(password || '', other.password_hash)) {
+        return res.status(403).json({
+          error: `This account is registered for the ${PORTAL_NAMES[otherRole]} portal, not here.`,
+        });
+      }
     }
   }
   return res.status(401).json({ error: 'Wrong email or password.' });
@@ -313,7 +327,11 @@ app.patch('/api/auth/profile', authRequired, async (req, res) => {
 const RESET_CODE_TTL_MS = 15 * 60_000;
 const RESET_CODE_TTL_MIN = RESET_CODE_TTL_MS / 60_000;
 const RESET_MAX_ATTEMPTS = 5;
-const PORTAL_NAMES: Record<Role, string> = { lab_attendant: 'EPTB Hub — CHC Intake', pathologist: 'EPTB Hub — Pathology Console' };
+const PORTAL_NAMES: Record<Role, string> = {
+  lab_attendant: 'EPTB Hub — CHC Intake',
+  pathologist: 'EPTB Hub — Pathology Console',
+  physician: 'EPTB Hub — Physician Review',
+};
 
 app.post('/api/auth/request-reset', resetLimiter, async (req, res) => {
   const { email, role = 'lab_attendant' } = req.body || {};
@@ -396,14 +414,14 @@ app.post('/api/auth/logout-all', authRequired, async (req, res) => {
 // Only still used for the legacy annotated-image fallback. Notes and
 // annotations moved to their own per-case routes below, because writing them
 // as one blob per key meant simultaneous saves overwrote each other.
-app.get('/api/store/:key', async (req, res) => res.json(await db.getKV(String(req.params.key))));
-app.put('/api/store/:key', async (req, res) => { await db.setKV(String(req.params.key), req.body); res.json({ ok: true }); });
+app.get('/api/store/:key', authRequired, async (req, res) => res.json(await db.getKV(String(req.params.key))));
+app.put('/api/store/:key', authRequired, async (req, res) => { await db.setKV(String(req.params.key), req.body); res.json({ ok: true }); });
 
 // ===== Notes & annotations (per case) =======================================
 // Reads stay bulk (cheap, and the dashboard wants everything at once); it is
 // only the WRITES that had to become per-row to be safe under concurrency.
-app.get('/api/notes', async (_req, res) => res.json(await db.getAllNotes()));
-app.get('/api/annotations', async (_req, res) => res.json(await db.getAllAnnotations()));
+app.get('/api/notes', authRequired, async (_req, res) => res.json(await db.getAllNotes()));
+app.get('/api/annotations', authRequired, async (_req, res) => res.json(await db.getAllAnnotations()));
 
 // Save ONE note on ONE case. Touches a single row, so a colleague saving a
 // different case at the same moment can't clobber it.
@@ -412,6 +430,18 @@ app.put('/api/cases/:id/notes/:kind', authRequired, async (req, res) => {
   const kind = String(req.params.kind);
   if (!db.NOTE_KINDS.includes(kind))
     return res.status(400).json({ error: `Unknown note type "${kind}".` });
+
+  // A pathologist writes the microscopic findings; a physician writes the
+  // prescription. Splitting them is the point of having both roles, so it is
+  // enforced HERE and not only by disabling a textarea — the UI is a courtesy,
+  // this is the actual rule.
+  const allowed = NOTE_WRITERS[kind] ?? [];
+  if (!allowed.includes(req.user!.role as Role)) {
+    return res.status(403).json({
+      error: `A ${req.user!.role.replace('_', ' ')} account cannot write the ${kind} note.`,
+    });
+  }
+
   if (!await db.getCaseMeta(id)) return res.status(404).json({ error: 'Case not found.' });
   const body = typeof req.body?.body === 'string' ? req.body.body : '';
   await db.setNote(id, kind, body, req.user!.id);
@@ -420,6 +450,10 @@ app.put('/api/cases/:id/notes/:kind', authRequired, async (req, res) => {
 
 app.put('/api/cases/:id/annotations', authRequired, async (req, res) => {
   const id = String(req.params.id);
+  // Marking up the slide is the pathologist's examination. A physician reads
+  // those marks to prescribe, but does not add their own.
+  if (req.user!.role !== 'pathologist')
+    return res.status(403).json({ error: 'Only a pathologist can annotate a slide.' });
   if (!await db.getCaseMeta(id)) return res.status(404).json({ error: 'Case not found.' });
   await db.setAnnotations(id, req.body ?? {}, req.user!.id);
   res.json({ ok: true });
@@ -430,13 +464,13 @@ app.put('/api/cases/:id/annotations', authRequired, async (req, res) => {
 // `?since=<iso>` returns only cases changed since then, so the worklist can
 // poll for changes rather than re-downloading everything every few seconds.
 // `?includeArchived=1` brings back soft-deleted cases.
-app.get('/api/cases', async (req, res) => res.json(await db.listCases({
+app.get('/api/cases', authRequired, async (req, res) => res.json(await db.listCases({
   since: typeof req.query.since === 'string' ? req.query.since : null,
   includeArchived: req.query.includeArchived === '1',
 })));
 
 // One full case, including its slide image (fetched when a slide is opened).
-app.get('/api/cases/:id', async (req, res) => {
+app.get('/api/cases/:id', authRequired, async (req, res) => {
   const c = await db.getCase(String(req.params.id));
   if (!c) return res.status(404).json({ error: 'not found' });
   res.json(c);
@@ -473,6 +507,25 @@ app.post('/api/cases', authRequired, async (req, res) => {
 // Archive / restore a case (soft delete). The record and any slide file stay
 // on disk — clinical data is rarely safe to destroy — the case simply stops
 // appearing in the worklist, and can be brought back.
+// Sign off the report. This is the end of the clinical workflow: the physician
+// has read the pathologist's findings, recorded a prescription, and is now
+// putting their name to it. The case leaves the pending worklist.
+//
+// Restricted to physicians for the same reason the note kinds are split — the
+// person who prescribes is the person who signs.
+app.post('/api/cases/:id/sign', authRequired, async (req, res) => {
+  if (req.user!.role !== 'physician')
+    return res.status(403).json({ error: 'Only a physician can sign and submit a report.' });
+
+  const id = String(req.params.id);
+  const existing = await db.getCaseMeta(id);
+  if (!existing) return res.status(404).json({ error: 'Case not found.' });
+  if (existing.reportedAt)
+    return res.status(409).json({ error: 'This report has already been signed.' });
+
+  res.json(await db.signCaseReport(id, req.user!.id));
+});
+
 app.patch('/api/cases/:id/archived', authRequired, async (req, res) => {
   const existing = await db.getCaseMeta(String(req.params.id));
   if (!existing) return res.status(404).json({ error: 'Case not found.' });
@@ -526,7 +579,7 @@ app.post('/api/cases/:id/slide', authRequired, uploadLimiter, async (req, res, n
 
 // Poll target for the intake app + pathology queue: how far along is this
 // case's slide? Cheap enough to call every few seconds.
-app.get('/api/cases/:id/slide-status', async (req, res) => {
+app.get('/api/cases/:id/slide-status', authRequired, async (req, res) => {
   const c = await db.getCaseMeta(String(req.params.id));
   if (!c) return res.status(404).json({ error: 'Case not found.' });
   res.json({ id: c.id, slideStatus: c.slideStatus, dziUrl: c.dziUrl, slideError: c.slideError });

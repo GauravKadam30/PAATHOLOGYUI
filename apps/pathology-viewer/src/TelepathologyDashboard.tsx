@@ -56,8 +56,9 @@ import { resolveImageUrl, renderAnnotatedImage, hasAnnotations } from './annotat
 // for why reads are bulk but writes are per-case.
 import {
   useCases, useNotes, useAnnotations, useLegacyAnnotatedImages,
-  useSaveNote, useSaveAnnotations, useArchiveCase,
+  useSaveNote, useSaveAnnotations, useArchiveCase, useSignReport,
 } from './queries';
+import { CAN_EDIT } from './types';
 import type { User, Case, CaseStatus, Modal, NoteKind, AnnotationData } from './types';
 import type { LucideIcon } from 'lucide-react';
 
@@ -317,6 +318,12 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   const saveNoteMutation = useSaveNote();
   const saveAnnotationsMutation = useSaveAnnotations();
   const archiveMutation = useArchiveCase();
+  const signMutation = useSignReport();
+
+  // What this account may edit. The server enforces the same rules — this only
+  // decides what the screen offers, so nobody types a paragraph into a box
+  // whose save will be refused.
+  const can = CAN_EDIT[user.role] ?? { findings: false, prescription: false, annotate: false, sign: false };
 
   const intakeCases = useMemo(() => casesQuery.data ?? [], [casesQuery.data]);
   const loadingCases = casesQuery.isLoading;
@@ -507,6 +514,20 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
     saveNoteOfKind('pathologist', pathologistDraft[String(id)] ?? '', setPathologistDraft);
   const saveMedicine = () =>
     saveNoteOfKind('medicine', medicineDraft[String(id)] ?? '', setMedicineDraft);
+
+  /** Sign the report. Asks first — it records a name against a diagnosis. */
+  const handleSignReport = async () => {
+    const ok = window.confirm(
+      `Sign and submit the report for ${currentCase.patient}?`
+      + ' This records your name against the diagnosis and marks the case as reported.',
+    );
+    if (!ok) return;
+    try {
+      await signMutation.mutateAsync({ caseId: id });
+    } catch (e) {
+      setModal({ type: 'message', title: 'Could not sign the report', text: (e as Error).message });
+    }
+  };
 
   // Modal openers
   // The annotated picture is BUILT HERE, on demand, from the saved vector
@@ -895,12 +916,21 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
 
           {/* `flex-1 min-h-0` (instead of a capped max-width + auto margins)
               lets this grid stretch to fill all the space between the sticky
-              header and the footer, at any window size. `auto-rows-fr` then
-              splits that height evenly between the two card rows, and each
-              row's two cards share it evenly across columns — so the four
-              cards always fill the screen instead of floating in the middle
-              of it. On phones (single column) rows fall back to their natural
-              content height and the page scrolls if needed. */}
+              header and the footer, at any window size. Rows then split that
+              height evenly, and each row's two cards share it evenly across
+              columns — so the four cards fill the screen instead of floating
+              in the middle of it. On phones (single column) rows fall back to
+              their natural content height and the page scrolls if needed.
+
+              WHY `minmax(20rem, 1fr)` RATHER THAN PLAIN `1fr`: a bare `1fr`
+              divides the window height no matter how little that leaves, so on
+              a laptop under roughly 950px tall the cards were shorter than
+              their own contents. The Medicine card — which carries an extra
+              Sign & Submit button — overflowed by 76px, and its buttons drew
+              on top of the footer. The floor guarantees every card at least
+              enough room for its tallest content, `1fr` still stretches them
+              equally when the window is tall, and `overflow-y-auto` lets the
+              area scroll on short screens instead of spilling. */}
           {/* `lg:auto-rows-fr` only forces equal row heights once we're
               actually in the 2-column layout (2 cards per row, sensible to
               match). Left on for the single-column mobile layout, it would
@@ -928,7 +958,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
               </div>
             </section>
 
-            <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 lg:auto-rows-fr gap-5">
+            <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-1 lg:grid-cols-2 lg:auto-rows-[minmax(20rem,1fr)] gap-5">
             {/* 1. NIKSAY Patient Information — read-only facts shown as a 2-col grid */}
             <SectionCard icon={ClipboardList} title="1. NIKSAY Patient Information">
               <dl className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-gray-100 rounded-xl overflow-hidden border border-gray-100 flex-1 auto-rows-fr">
@@ -973,12 +1003,13 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
             <SectionCard icon={Stethoscope} title="3. Pathologist Consultation">
               <textarea
                 className={taClass}
-                placeholder="Enter microscopic findings…"
+                placeholder={can.findings ? 'Enter microscopic findings…' : 'Written by the pathologist'}
+                readOnly={!can.findings}
                 value={pathologistDraft[String(id)] ?? pathologistSaved[String(id)] ?? ''}
                 onChange={(e) => setPathologistDraft(prev => ({ ...prev, [id]: e.target.value }))}
               />
               <div className="flex flex-wrap gap-2 mt-4">
-                <button onClick={savePathologist} className={btnPrimary}>
+                <button onClick={savePathologist} disabled={!can.findings} className={btnPrimary}>
                   {savedFlash === 'pathologist'
                     ? <><Check className="w-3.5 h-3.5" /> Saved</>
                     : <><Save className="w-3.5 h-3.5" /> Save Notes</>}
@@ -990,20 +1021,32 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
             <SectionCard icon={Pill} title="4. Medicine Consultation">
               <textarea
                 className={taClass}
-                placeholder="Physician recommendations…"
+                placeholder={can.prescription ? 'Physician recommendations…' : 'Written by the physician'}
+                readOnly={!can.prescription}
                 value={medicineDraft[String(id)] ?? medicineSaved[String(id)] ?? ''}
                 onChange={(e) => setMedicineDraft(prev => ({ ...prev, [id]: e.target.value }))}
               />
               <div className="flex flex-wrap gap-2 mt-4">
-                <button onClick={saveMedicine} className={btnPrimary}>
+                <button onClick={saveMedicine} disabled={!can.prescription} className={btnPrimary}>
                   {savedFlash === 'medicine'
                     ? <><Check className="w-3.5 h-3.5" /> Saved</>
                     : <><Save className="w-3.5 h-3.5" /> Save Notes</>}
                 </button>
               </div>
-              <button className="w-full mt-5 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm tracking-wide hover:bg-emerald-700 active:scale-[0.99] shadow-md shadow-emerald-600/25 transition-all inline-flex items-center justify-center gap-2">
-                <ShieldCheck className="w-4 h-4" /> Sign &amp; Submit Report
-              </button>
+              {currentCase.reportedAt ? (
+                <div className="w-full mt-5 py-3 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl font-bold text-sm tracking-wide inline-flex items-center justify-center gap-2">
+                  <ShieldCheck className="w-4 h-4" /> Signed by {currentCase.reportedBy ?? 'physician'}
+                </div>
+              ) : (
+                <button
+                  onClick={handleSignReport}
+                  disabled={!can.sign || signMutation.isPending}
+                  title={can.sign ? undefined : 'Only a physician can sign a report'}
+                  className="w-full mt-5 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm tracking-wide hover:bg-emerald-700 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 shadow-md shadow-emerald-600/25 transition-all inline-flex items-center justify-center gap-2"
+                >
+                  <ShieldCheck className="w-4 h-4" /> {signMutation.isPending ? 'Submitting…' : 'Sign & Submit Report'}
+                </button>
+              )}
             </SectionCard>
             </div>
           </div>
@@ -1167,6 +1210,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
           </button>
           {/* The Annotate toggle: when off it enters annotation mode; when on it
               opens the save/discard dialog (which then exits). */}
+          {can.annotate && (
           <button
             onClick={() => (isDrawing ? setShowSaveModal(true) : enableAnnotation())}
             className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2.5 rounded-[10px] text-[11px] font-bold uppercase tracking-wide transition-all border ${
@@ -1179,6 +1223,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
             <span className="hidden sm:inline">{isDrawing ? 'Disable Annotation' : 'Enable Annotation'}</span>
             <span className="sm:hidden">{isDrawing ? 'Disable' : 'Annotate'}</span>
           </button>
+          )}
         </div>
       </div>
 

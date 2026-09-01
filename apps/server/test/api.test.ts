@@ -124,6 +124,11 @@ before(async () => {
       BACKUP_DIR: path.join(tmpDir, 'backups'),
       BACKUP_INTERVAL_MS: String(24 * 60 * 60 * 1000),
       JWT_SECRET: 'test-secret-not-used-anywhere-real',
+      // The suite signs up dozens of accounts in a few seconds. That is the
+      // exact shape of the attack the rate limiter blocks, so it has to be
+      // raised here or later tests fail with 429s that look like auth bugs.
+      AUTH_RATE_MAX: '10000',
+      RESET_RATE_MAX: '10000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -211,6 +216,20 @@ test('a token stops working once the account signs out everywhere', async () => 
 
 // --- Cases -------------------------------------------------------------------
 
+/** Sign up an account of any role and return its token. */
+async function makeUser(role: string, prefix: string) {
+  const { body } = await api('/api/auth/signup', {
+    method: 'POST',
+    body: {
+      email: uniqueEmail(prefix), password: 'secret123',
+      fullName: `${prefix} user`, chcName: '', role,
+    },
+  });
+  return body.token as string;
+}
+const makePathologist = () => makeUser('pathologist', 'path');
+const makePhysician = () => makeUser('physician', 'phys');
+
 async function makeAttendant() {
   const { body } = await api('/api/auth/signup', {
     method: 'POST',
@@ -243,7 +262,7 @@ test('archiving hides a case from the worklist and restoring brings it back', as
   const token = await makeAttendant();
   const { body: created } = await api('/api/cases', { method: 'POST', token, body: { patient: 'Archive Me' } });
 
-  const visible = async () => (await api('/api/cases')).body.some((c: any) => c.id === created.id);
+  const visible = async () => (await api('/api/cases', { token })).body.some((c: any) => c.id === created.id);
   assert.equal(await visible(), true);
 
   await api(`/api/cases/${created.id}/archived`, { method: 'PATCH', token, body: { archived: true } });
@@ -259,15 +278,16 @@ test('simultaneous saves on DIFFERENT cases both survive', async () => {
   const token = await makeAttendant();
   const a = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Race A' } })).body;
   const b = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Race B' } })).body;
+  const pathToken = await makePathologist();
 
   // Fired together, as two people saving at the same moment would. Under the
   // old blob-per-key storage, whichever landed second overwrote the other.
   await Promise.all([
-    api(`/api/cases/${a.id}/notes/pathologist`, { method: 'PUT', token, body: { body: 'findings for A' } }),
-    api(`/api/cases/${b.id}/notes/pathologist`, { method: 'PUT', token, body: { body: 'findings for B' } }),
+    api(`/api/cases/${a.id}/notes/pathologist`, { method: 'PUT', token: pathToken, body: { body: 'findings for A' } }),
+    api(`/api/cases/${b.id}/notes/pathologist`, { method: 'PUT', token: pathToken, body: { body: 'findings for B' } }),
   ]);
 
-  const notes = (await api('/api/notes')).body;
+  const notes = (await api('/api/notes', { token: pathToken })).body;
   assert.equal(notes[a.id]?.pathologist, 'findings for A');
   assert.equal(notes[b.id]?.pathologist, 'findings for B');
 });
@@ -276,13 +296,18 @@ test('the three note kinds on one case are independent', async () => {
   const token = await makeAttendant();
   const c = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Kinds' } })).body;
 
+  // Each kind is written by the role entitled to write it: a pathologist owns
+  // the findings, a physician owns the prescription.
+  const pathToken = await makePathologist();
+  const physToken = await makePhysician();
+
   await Promise.all([
-    api(`/api/cases/${c.id}/notes/clinical`, { method: 'PUT', token, body: { body: 'clinical text' } }),
-    api(`/api/cases/${c.id}/notes/pathologist`, { method: 'PUT', token, body: { body: 'pathologist text' } }),
-    api(`/api/cases/${c.id}/notes/medicine`, { method: 'PUT', token, body: { body: 'medicine text' } }),
+    api(`/api/cases/${c.id}/notes/clinical`, { method: 'PUT', token: pathToken, body: { body: 'clinical text' } }),
+    api(`/api/cases/${c.id}/notes/pathologist`, { method: 'PUT', token: pathToken, body: { body: 'pathologist text' } }),
+    api(`/api/cases/${c.id}/notes/medicine`, { method: 'PUT', token: physToken, body: { body: 'medicine text' } }),
   ]);
 
-  const notes = (await api('/api/notes')).body[c.id];
+  const notes = (await api('/api/notes', { token: pathToken })).body[c.id];
   assert.equal(notes.clinical, 'clinical text');
   assert.equal(notes.pathologist, 'pathologist text');
   assert.equal(notes.medicine, 'medicine text');
@@ -308,9 +333,10 @@ test('annotations round-trip as vector data', async () => {
   const token = await makeAttendant();
   const c = (await api('/api/cases', { method: 'POST', token, body: { patient: 'Marks' } })).body;
   const marks = { version: '7.4.0', objects: [{ type: 'Ellipse', left: 100, top: 200, rx: 50, ry: 25 }] };
+  const pathToken = await makePathologist();
 
-  await api(`/api/cases/${c.id}/annotations`, { method: 'PUT', token, body: marks });
-  const stored = (await api('/api/annotations')).body[c.id];
+  await api(`/api/cases/${c.id}/annotations`, { method: 'PUT', token: pathToken, body: marks });
+  const stored = (await api('/api/annotations', { token: pathToken })).body[c.id];
   assert.equal(stored.objects.length, 1);
   assert.equal(stored.objects[0].left, 100);
 });
@@ -325,13 +351,77 @@ test('?since= returns only cases changed after that moment', async () => {
   await new Promise((r) => setTimeout(r, 15));           // ensure a distinct timestamp
 
   const after = (await api('/api/cases', { method: 'POST', token, body: { patient: 'After' } })).body;
-  const changed = (await api(`/api/cases?since=${encodeURIComponent(watermark)}`)).body;
+  const changed = (await api(`/api/cases?since=${encodeURIComponent(watermark)}`, { token })).body;
 
   assert.ok(changed.some((c: any) => c.id === after.id), 'the newer case must be included');
   assert.ok(changed.every((c: any) => c.updatedAt > watermark), 'nothing older should come back');
 });
 
 // --- Password reset ----------------------------------------------------------
+
+// --- Access control ----------------------------------------------------------
+// These lock in the fix for the worst defect this project has had: every read
+// endpoint was open, so `curl /api/cases` returned the full patient list to
+// anyone who could reach the server.
+
+test('patient data cannot be read without signing in', async () => {
+  for (const path of ['/api/cases', '/api/notes', '/api/annotations', '/api/store/anything']) {
+    const res = await api(path);
+    assert.equal(res.status, 401, `${path} must require a token`);
+  }
+});
+
+test('an anonymous caller cannot write to the key/value store', async () => {
+  const res = await api('/api/store/probe', { method: 'PUT', body: { hacked: true } });
+  assert.equal(res.status, 401);
+});
+
+test('a pathologist cannot write the prescription, a physician cannot write the findings', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'Split' } })).body;
+  const pathToken = await makePathologist();
+  const physToken = await makePhysician();
+
+  const pathWritesMedicine = await api(`/api/cases/${c.id}/notes/medicine`, {
+    method: 'PUT', token: pathToken, body: { body: 'prescribing without a licence' },
+  });
+  assert.equal(pathWritesMedicine.status, 403);
+
+  const physWritesFindings = await api(`/api/cases/${c.id}/notes/pathologist`, {
+    method: 'PUT', token: physToken, body: { body: 'diagnosing without a microscope' },
+  });
+  assert.equal(physWritesFindings.status, 403);
+});
+
+test('only a pathologist may annotate a slide', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'NoDraw' } })).body;
+  const physToken = await makePhysician();
+
+  const res = await api(`/api/cases/${c.id}/annotations`, {
+    method: 'PUT', token: physToken, body: { objects: [] },
+  });
+  assert.equal(res.status, 403);
+});
+
+test('only a physician can sign a report, and only once', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'Signable' } })).body;
+  const pathToken = await makePathologist();
+  const physToken = await makePhysician();
+
+  assert.equal((await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: pathToken })).status, 403,
+    'a pathologist must not be able to sign');
+
+  const signed = await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: physToken });
+  assert.equal(signed.status, 200);
+  assert.equal(signed.body.status, 'Reported');
+  assert.ok(signed.body.reportedAt, 'the signing time must be recorded');
+  assert.ok(signed.body.reportedBy, 'the signer must be recorded');
+
+  assert.equal((await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: physToken })).status, 409,
+    'signing twice must be refused');
+});
 
 test('requesting a reset never reveals whether the account exists', async () => {
   const real = uniqueEmail('reset');

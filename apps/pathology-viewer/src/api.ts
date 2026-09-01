@@ -42,7 +42,33 @@ export const API_BASE: string = resolveApiBase().replace(/\/+$/, ''); // strip a
 // stamped on every signup/login so the shared backend can tell this app's
 // accounts apart from CHC lab-attendant accounts on the same server.
 const TOKEN_KEY = 'pv_token';
-const ROLE = 'pathologist';
+
+/** The two roles this console serves. The CHC intake app is a separate origin. */
+export type ConsoleRole = 'pathologist' | 'physician';
+
+/** URL prefix that pre-selects the physician role on the sign-in screen. */
+export const PHYSICIAN_PATH = '/physician';
+
+/**
+ * Which role this browser tab is signing in as, decided by the URL.
+ *
+ * One React app serves two of the three roles, because a physician and a
+ * pathologist look at the SAME case screens — the difference is only which
+ * parts they may edit. Rather than build a second app that would duplicate the
+ * viewer, the worklist and the report layout, the portal is chosen by the
+ * address used to reach it:
+ *
+ *   /physician…  -> physician
+ *   anything else -> pathologist
+ *
+ * This only affects SIGNUP and LOGIN. Once signed in, the role is whatever the
+ * server says it is on the account, so a physician who navigates to /queue is
+ * still a physician.
+ */
+export function portalRole(): ConsoleRole {
+  if (typeof window === 'undefined') return 'pathologist';
+  return window.location.pathname.startsWith(PHYSICIAN_PATH) ? 'physician' : 'pathologist';
+}
 
 export const getToken = (): string | null => localStorage.getItem(TOKEN_KEY);
 export const setToken = (t: string | null): void => {
@@ -83,26 +109,56 @@ async function authRequest<T>(path: string, options: RequestInit = {}): Promise<
 }
 
 /** Create a pathologist account (name + email + password — no CHC). */
-export async function signup(payload: Credentials): Promise<User> {
+export async function signup(payload: Credentials, role: ConsoleRole): Promise<User> {
   const data = await authRequest<AuthResponse>('/api/auth/signup', {
     method: 'POST',
-    body: JSON.stringify({ ...payload, role: ROLE }),
+    body: JSON.stringify({ ...payload, role }),
   });
   setToken(data.token);
   return data.user;
 }
 
 /** Sign in to an existing pathologist account. */
-export async function login(payload: Credentials): Promise<User> {
+export async function login(payload: Credentials, role: ConsoleRole): Promise<User> {
   const data = await authRequest<AuthResponse>('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ ...payload, role: ROLE }),
+    body: JSON.stringify({ ...payload, role }),
   });
   setToken(data.token);
   return data.user;
 }
 
 /** "Who am I?" using the saved token — restores the session on reopen. */
+/**
+ * Step 1 of a password reset: ask for a code.
+ *
+ * The role goes with it because one email can hold an account on more than one
+ * portal — resetting the pathologist password must not touch a CHC account on
+ * the same address.
+ *
+ * The server's reply is deliberately identical whether or not the account
+ * exists, so this cannot be used to discover which emails are registered. The
+ * message shown to the user comes from that reply rather than being guessed
+ * here, so it stays accurate if the backend's email setup changes.
+ */
+export async function requestReset(email: string, role: ConsoleRole): Promise<{ ok: true; message: string }> {
+  return authRequest('/api/auth/request-reset', {
+    method: 'POST',
+    body: JSON.stringify({ email, role }),
+  });
+}
+
+/** Step 2: exchange the emailed code for a new password. */
+export async function resetPassword(
+  payload: { email: string; code: string; newPassword: string },
+  role: ConsoleRole,
+): Promise<{ ok: true }> {
+  return authRequest('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ ...payload, role }),
+  });
+}
+
 export async function getMe(): Promise<User> {
   const data = await authRequest<{ user: User }>('/api/auth/me');
   return data.user;
@@ -121,8 +177,22 @@ export function logout(): void {
  * vector shapes. Nothing writes to that store any more — which is why there is
  * no matching `apiPut` here.
  */
+/**
+ * Authorization header for the signed-in user, or {} when signed out.
+ *
+ * Every request that touches patient data needs this. The read functions below
+ * originally used a bare fetch() with no headers, and the server left those
+ * routes unauthenticated to match — so the whole worklist, every note and
+ * every slide image could be fetched by anyone who knew the URL. Sending the
+ * token is the half of that fix that lives on this side.
+ */
+export function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export async function apiGet<T = unknown>(key: string): Promise<T> {
-  const res = await fetch(`${API_BASE}/api/store/${encodeURIComponent(key)}`);
+  const res = await fetch(`${API_BASE}/api/store/${encodeURIComponent(key)}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`GET ${key} failed: ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -137,7 +207,7 @@ export async function getCases(since?: string | null): Promise<Case[]> {
   const url = since
     ? `${API_BASE}/api/cases?since=${encodeURIComponent(since)}`
     : `${API_BASE}/api/cases`;
-  const res = await fetch(url);
+  const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error(`GET cases failed: ${res.status}`);
   return res.json() as Promise<Case[]>;
 }
@@ -148,13 +218,13 @@ export async function getCases(since?: string | null): Promise<Case[]> {
 // so two people saving at once silently lost one of the two saves.
 
 export async function getAllNotes(): Promise<NotesByCase> {
-  const res = await fetch(`${API_BASE}/api/notes`);
+  const res = await fetch(`${API_BASE}/api/notes`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`GET notes failed: ${res.status}`);
   return res.json() as Promise<NotesByCase>;
 }
 
 export async function getAllAnnotations(): Promise<AnnotationsByCase> {
-  const res = await fetch(`${API_BASE}/api/annotations`);
+  const res = await fetch(`${API_BASE}/api/annotations`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`GET annotations failed: ${res.status}`);
   return res.json() as Promise<AnnotationsByCase>;
 }
@@ -183,12 +253,17 @@ export async function setCaseArchived(caseId: number | string, archived = true):
   });
 }
 
+/** Sign off a report. Physician accounts only — the server enforces it. */
+export async function signCaseReport(caseId: number | string): Promise<Case> {
+  return authRequest(`/api/cases/${encodeURIComponent(caseId)}/sign`, { method: 'POST' });
+}
+
 /**
  * Fetch one submitted case's slide image (data-URL), loaded lazily when the
  * patient's slide is opened. Null when the case has no inline image.
  */
 export async function getCaseImage(id: number | string): Promise<string | null> {
-  const res = await fetch(`${API_BASE}/api/cases/${encodeURIComponent(id)}`);
+  const res = await fetch(`${API_BASE}/api/cases/${encodeURIComponent(id)}`, { headers: authHeaders() });
   if (!res.ok) throw new Error(`GET case ${id} failed: ${res.status}`);
   const full = (await res.json()) as Case;
   return full.image || null;
@@ -203,7 +278,7 @@ export async function getCaseImage(id: number | string): Promise<string | null> 
  */
 export async function fetchSlideInfo(caseId: number | string): Promise<SlideInfo | null> {
   try {
-    const res = await fetch(`${API_BASE}/slides/${encodeURIComponent(caseId)}/info.json`);
+    const res = await fetch(`${API_BASE}/slides/${encodeURIComponent(caseId)}/info.json`, { headers: authHeaders() });
     if (!res.ok) return null;
     return (await res.json()) as SlideInfo;
   } catch {

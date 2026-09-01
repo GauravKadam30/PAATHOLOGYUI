@@ -26,8 +26,20 @@
 
 // --- Users --------------------------------------------------------------------
 
-/** Which portal an account belongs to. One email may hold one of each. */
-export type Role = 'lab_attendant' | 'pathologist';
+/**
+ * Which portal an account belongs to. One email may hold one of each.
+ *
+ * The three map onto the three people in a consultation:
+ *   lab_attendant — CHC staff who register the patient and upload the slide
+ *   pathologist   — examines the slide, annotates it, writes the findings
+ *   physician     — reads the findings and prescribes, then signs the report
+ *
+ * Keeping physician separate from pathologist is not bookkeeping. One account
+ * writing BOTH the microscopic findings and the prescription removes the
+ * second opinion that the workflow exists to provide, and makes an audit
+ * unable to say who did which half.
+ */
+export type Role = 'lab_attendant' | 'pathologist' | 'physician';
 
 /**
  * A user row exactly as the drivers return it — snake_case, including the
@@ -45,6 +57,18 @@ export interface UserRow {
   /** Raised to invalidate every token issued before now. */
   token_version: number;
 }
+
+/**
+ * Which note kind each role may WRITE.
+ *
+ * Enforced on the server, not just hidden in the UI — a disabled textarea is a
+ * courtesy, but anyone can send the request directly with curl.
+ */
+export const NOTE_WRITERS: Record<string, Role[]> = {
+  clinical: ['pathologist', 'physician'],
+  pathologist: ['pathologist'],
+  medicine: ['physician'],
+};
 
 /** The safe subset sent to the browser. */
 export interface PublicUser {
@@ -89,6 +113,10 @@ export interface CaseMeta {
   archived: boolean;
   updatedAt: string | null;
   hasImage: boolean;
+  /** When a physician signed the report. Null while the case is pending. */
+  reportedAt: string | null;
+  /** Display name of the physician who signed it. */
+  reportedBy: string | null;
 }
 
 /** A case WITH its inline image — fetched only when a slide is opened. */
@@ -179,6 +207,11 @@ export interface DataDriver {
   getCaseMeta(id: number | string): Promise<CaseMeta | null>;
   findCaseByChcId(chcId: string, chcName: string): Promise<CaseMeta | null>;
   createCase(data: NewCaseInput, user: UserRow): Promise<number>;
+  /**
+   * Mark a case reported and record who signed it. This is what moves a case
+   * out of the pending worklist, so it is the end of the clinical workflow.
+   */
+  signCaseReport(id: number | string, userId: number): Promise<CaseMeta | null>;
   touchCase(id: number | string): Promise<void>;
   /**
    * Returns the updated case, because the archive endpoint echoes it straight

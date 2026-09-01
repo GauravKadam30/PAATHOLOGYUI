@@ -76,6 +76,10 @@ export const cases = pgTable('cases', {
   archived: boolean('archived').notNull().default(false),
   // Drives the queue's incremental `?since=` polling.
   updatedAt: text('updated_at'),
+  // Report sign-off. Set together when a physician signs, and what moves the
+  // case from Pending to Reported in the worklist. Null while pending.
+  reportedAt: text('reported_at'),
+  reportedBy: text('reported_by'),
 }, (t) => ({
   statusIdx: index('idx_cases_status').on(t.status),
   updatedIdx: index('idx_cases_updated').on(t.updatedAt),

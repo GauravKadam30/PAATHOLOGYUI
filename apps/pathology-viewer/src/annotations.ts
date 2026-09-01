@@ -24,7 +24,7 @@
  * to the same cell at any zoom or pan — see syncViewport in WsiViewer.
  */
 import * as FabricModule from 'fabric';
-import { API_BASE } from './api';
+import { API_BASE, authHeaders } from './api';
 import type { AnnotationData, Case } from './types';
 
 const fabric = FabricModule;
@@ -72,13 +72,40 @@ function loadImage(src: string, crossOrigin = false): Promise<HTMLImageElement |
 }
 
 /**
+ * Load a picture from an endpoint that requires a signed-in account.
+ *
+ * An <img> tag CANNOT send an Authorization header — there is no API for it —
+ * so anything behind auth has to be fetched first and handed to the image as a
+ * blob URL. Slide overviews live under /slides/*, which is protected because
+ * the tiles are patient data, so this is the only way to composite them.
+ *
+ * The blob URL is same-origin, which also keeps the export canvas untainted —
+ * `toDataURL()` would throw on a canvas that had drawn a cross-origin image.
+ */
+async function loadAuthedImage(src: string): Promise<HTMLImageElement | null> {
+  try {
+    const res = await fetch(src, { headers: authHeaders() });
+    if (!res.ok) return null;
+    const objectUrl = URL.createObjectURL(await res.blob());
+    try {
+      return await loadImage(objectUrl);
+    } finally {
+      // Safe here: loadImage resolves on `onload`, so the pixels are decoded.
+      URL.revokeObjectURL(objectUrl);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read a whole slide's native pixel dimensions out of its Deep Zoom
  * descriptor. Needed on the Reports page, where the viewer isn't mounted and
  * so can't report the size itself.
  */
 export async function fetchSlideSize(dziUrl: string): Promise<SlideSize | null> {
   try {
-    const res = await fetch(resolveDziUrl(dziUrl));
+    const res = await fetch(resolveDziUrl(dziUrl), { headers: authHeaders() });
     if (!res.ok) return null;
     const xml = await res.text();
     const w = /Width="(\d+)"/.exec(xml);
@@ -129,7 +156,7 @@ export async function renderAnnotatedImage(
     W = Math.round(slideWidth * markScale);
     H = Math.round(slideHeight * markScale);
     const base = resolveDziUrl(caseData.dziUrl).replace(/slide\.dzi$/, '');
-    img = await loadImage(`${base}overview.jpeg?w=${W}&h=${H}`, true);
+    img = await loadAuthedImage(`${base}overview.jpeg?w=${W}&h=${H}`);
   } else if (caseData.image) {
     // Ordinary photo case: composite at the image's own full resolution.
     img = await loadImage(resolveImageUrl(caseData.image));
@@ -160,4 +187,89 @@ export async function renderAnnotatedImage(
   layer.dispose();
 
   return out.toDataURL('image/png');
+}
+
+// --- Listing marks for the annotation panel -----------------------------------
+
+/** One saved mark, summarised for the annotation list. */
+export interface AnnotationSummary {
+  /** Position in the saved objects array — also its label in the list. */
+  index: number;
+  /** Freehand / Rectangle / Oval, for the row's icon and wording. */
+  kind: 'Freehand' | 'Rectangle' | 'Oval' | 'Shape';
+  /** The colour it was drawn in, so the row can show a matching swatch. */
+  color: string;
+  /** Bounding box in IMAGE pixels, always top-left origin. */
+  box: { left: number; top: number; width: number; height: number };
+}
+
+/**
+ * Summarise saved marks so they can be listed and jumped to.
+ *
+ * WHY THIS EXISTS: marks are stored in image coordinates, so a mark drawn at
+ * 20x is only a few screen pixels once the whole slide is in view — on a
+ * 135,000 px wide scan a 100 µm lesion is about 3 px. Zoomed out, they are
+ * effectively impossible to find by eye, which makes reviewing a case a hunt.
+ * A list you can click turns that into one action.
+ *
+ * The box is computed from the raw JSON rather than by rebuilding fabric
+ * objects, which would mean instantiating a canvas just to read coordinates.
+ * Each shape is handled explicitly because fabric records them differently:
+ * a Path carries its point list, an Ellipse carries radii, a Rect carries a
+ * size — and their origins differ too (the Rect and Oval tools anchor at the
+ * top-left, while a Path uses fabric's centre default). Reading the geometry
+ * directly sidesteps all of that.
+ */
+export function listAnnotations(data: AnnotationData | null | undefined): AnnotationSummary[] {
+  const objects = (data as { objects?: unknown[] } | null | undefined)?.objects;
+  if (!Array.isArray(objects)) return [];
+
+  const out: AnnotationSummary[] = [];
+  objects.forEach((raw, index) => {
+    const o = raw as Record<string, any>;
+    const scaleX = Number(o.scaleX ?? 1) || 1;
+    const scaleY = Number(o.scaleY ?? 1) || 1;
+    let box: AnnotationSummary['box'] | null = null;
+    let kind: AnnotationSummary['kind'] = 'Shape';
+
+    // Classify by fabric's own `type`, NOT by which properties are present:
+    // a Rect also carries rx/ry (its CORNER RADIUS, 0 for square corners), so
+    // testing for rx first silently read every rectangle as a zero-size oval
+    // and dropped it from the list.
+    const type = String(o.type ?? '').toLowerCase();
+
+    if (type === 'path' || (!type && Array.isArray(o.path))) {
+      // Freehand: ["M", x, y], ["L", x, y], … — take the extents of the points.
+      kind = 'Freehand';
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const seg of o.path as unknown[]) {
+        if (!Array.isArray(seg)) continue;
+        for (let i = 1; i + 1 < seg.length; i += 2) {
+          const x = Number(seg[i]), y = Number(seg[i + 1]);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+      }
+      if (Number.isFinite(minX)) box = { left: minX, top: minY, width: maxX - minX, height: maxY - minY };
+    } else if (type === 'ellipse' || type === 'circle') {
+      // Oval: left/top are the top-left corner (the tool sets originX/Y).
+      kind = 'Oval';
+      box = {
+        left: Number(o.left ?? 0), top: Number(o.top ?? 0),
+        width: Number(o.rx ?? 0) * 2 * scaleX, height: Number(o.ry ?? 0) * 2 * scaleY,
+      };
+    } else if (o.width != null && o.height != null) {   // Rect and anything boxy
+      kind = 'Rectangle';
+      box = {
+        left: Number(o.left ?? 0), top: Number(o.top ?? 0),
+        width: Number(o.width) * scaleX, height: Number(o.height) * scaleY,
+      };
+    }
+
+    // A zero-area mark (a stray click) is not worth a row in the list.
+    if (!box || !Number.isFinite(box.left) || (box.width < 1 && box.height < 1)) return;
+    out.push({ index, kind, color: String(o.stroke || '#000000'), box });
+  });
+  return out;
 }
