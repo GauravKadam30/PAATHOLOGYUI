@@ -16,7 +16,7 @@
  * introduced here, and the front-ends already depend on it.
  */
 import { drizzle } from 'drizzle-orm/node-postgres';
-import { eq, and, gt, sql } from 'drizzle-orm';
+import { eq, and, gt, desc, sql } from 'drizzle-orm';
 import pg from 'pg';
 import fs from 'fs';
 import path from 'path';
@@ -24,10 +24,10 @@ import { spawn } from 'child_process';
 import * as schema from './schema.ts';
 import type {
   DataDriver, UserRow, NewUser, CaseMeta, CaseFull, NewCaseInput, ListCasesOptions,
-  NotesByCase, AnnotationData, AnnotationsByCase, ResetCodeRow, BackupResult,
+  NotesByCase, AnnotationData, AnnotationsByCase, ResetCodeRow, BackupResult, AuditEntry,
 } from './types.ts';
 
-const { users, cases, caseNotes, caseAnnotations, resetCodes, kv } = schema;
+const { users, cases, caseNotes, caseAnnotations, resetCodes, kv, auditLog } = schema;
 
 export const NOTE_KINDS = ['clinical', 'pathologist', 'medicine'];
 
@@ -120,6 +120,59 @@ export async function init(): Promise<void> {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    -- Append-only record of who did what. Kept SEPARATE from the tables it
+    -- describes so nothing here is ever updated or deleted in normal use — an
+    -- audit trail that can be edited is not an audit trail.
+    --
+    -- The actor's NAME and ROLE are copied in rather than joined from users:
+    -- an entry has to still read correctly years later, after that account has
+    -- been renamed, changed role, or removed entirely.
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id        SERIAL PRIMARY KEY,
+      at        TEXT NOT NULL,
+      user_id   INTEGER,
+      user_name TEXT,
+      user_role TEXT,
+      action    TEXT NOT NULL,
+      case_id   INTEGER,
+      detail    TEXT,
+      ip        TEXT
+    );
+    -- The two questions actually asked of an audit log: "what happened to this
+    -- patient?" and "what did this person do?"
+    CREATE INDEX IF NOT EXISTS idx_audit_case ON audit_log (case_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log (user_id, id DESC);
+  `);
+
+  // --- Referential integrity --------------------------------------------------
+  // PostgreSQL has no ADD CONSTRAINT IF NOT EXISTS, so each is added only when
+  // absent. Failures are WARNED about rather than thrown: a constraint cannot
+  // be applied while rows violate it, and a server that refuses to start
+  // because of one stale row would be worse than one that runs and says so.
+  await pool.query(`
+    DO $$
+    DECLARE
+      fk RECORD;
+    BEGIN
+      FOR fk IN
+        SELECT * FROM (VALUES
+          ('case_notes_case_id_fkey',       'case_notes',       'case_id',    'cases', 'id', 'CASCADE'),
+          ('case_annotations_case_id_fkey', 'case_annotations', 'case_id',    'cases', 'id', 'CASCADE'),
+          ('cases_created_by_fkey',         'cases',            'created_by', 'users', 'id', 'SET NULL')
+        ) AS t(name, child, col, parent, pcol, ondelete)
+      LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = fk.name) THEN
+          BEGIN
+            EXECUTE format(
+              'ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (%I) REFERENCES %I(%I) ON DELETE %s',
+              fk.child, fk.name, fk.col, fk.parent, fk.pcol, fk.ondelete);
+          EXCEPTION WHEN others THEN
+            RAISE WARNING 'Could not add % (%): rows probably violate it', fk.name, SQLERRM;
+          END;
+        END IF;
+      END LOOP;
+    END $$;
   `);
 }
 
@@ -435,6 +488,44 @@ export async function getKV(key: string): Promise<unknown> {
 export async function setKV(key: string, value: unknown): Promise<void> {
   await db.insert(kv).values({ key, value: JSON.stringify(value) })
     .onConflictDoUpdate({ target: kv.key, set: { value: sql`excluded.value` } });
+}
+
+// --- Audit trail --------------------------------------------------------------
+
+/**
+ * Record one action.
+ *
+ * SWALLOWS ITS OWN ERRORS ON PURPOSE. This runs alongside real work — saving a
+ * note, signing a report — and a failure to write the audit row must not fail
+ * the clinical action that succeeded. Losing an audit line is bad; refusing a
+ * pathologist's save because the log was unavailable is worse. Failures are
+ * logged loudly to the server console so they are noticed.
+ */
+export async function writeAudit(entry: AuditEntry): Promise<void> {
+  try {
+    await db.insert(auditLog).values({
+      at: new Date().toISOString(),
+      userId: entry.userId ?? null,
+      userName: entry.userName ?? null,
+      userRole: entry.userRole ?? null,
+      action: entry.action,
+      caseId: entry.caseId ?? null,
+      detail: entry.detail ?? null,
+      ip: entry.ip ?? null,
+    });
+  } catch (e) {
+    console.error('[audit] could NOT record:', entry.action, (e as Error).message);
+  }
+}
+
+/** Recent audit entries, newest first — for a per-case history view. */
+export async function readAudit({ caseId, limit = 100 }: { caseId?: number; limit?: number } = {}): Promise<unknown[]> {
+  const capped = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const q = db.select().from(auditLog);
+  const rows = caseId != null
+    ? await q.where(eq(auditLog.caseId, Number(caseId))).orderBy(desc(auditLog.id)).limit(capped)
+    : await q.orderBy(desc(auditLog.id)).limit(capped);
+  return rows;
 }
 
 /**

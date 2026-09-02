@@ -423,6 +423,50 @@ test('only a physician can sign a report, and only once', async () => {
     'signing twice must be refused');
 });
 
+// --- Audit trail --------------------------------------------------------------
+
+test('actions are recorded against the case with who did them', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'Audited' } })).body;
+  const pathToken = await makePathologist();
+  const physToken = await makePhysician();
+
+  await api(`/api/cases/${c.id}`, { token: pathToken });                       // case.view
+  await api(`/api/cases/${c.id}/notes/pathologist`, {
+    method: 'PUT', token: pathToken, body: { body: 'findings' },
+  });                                                                          // note.save
+  await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: physToken });  // report.sign
+
+  const log = (await api(`/api/cases/${c.id}/audit`, { token: pathToken })).body;
+  const actions = log.map((r: any) => r.action);
+  assert.ok(actions.includes('case.view'), 'opening a record must be recorded');
+  assert.ok(actions.includes('note.save'), 'saving a note must be recorded');
+  assert.ok(actions.includes('report.sign'), 'signing must be recorded');
+
+  // The actor is stored by NAME and ROLE, not only by id, so the entry still
+  // reads correctly if that account is later renamed or removed.
+  const signed = log.find((r: any) => r.action === 'report.sign');
+  assert.ok(signed.userName, 'the actor name must be recorded');
+  assert.equal(signed.userRole, 'physician');
+});
+
+test('polling the worklist is NOT audited', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'Poll' } })).body;
+  const pathToken = await makePathologist();
+
+  // One real open, so there is something in this case's log to compare against.
+  await api(`/api/cases/${c.id}`, { token: pathToken });
+  const before = (await api(`/api/cases/${c.id}/audit`, { token: pathToken })).body.length;
+
+  // The worklist polls every four seconds. Recording that would add hundreds of
+  // rows an hour per user and bury the entries that matter.
+  for (let i = 0; i < 10; i++) await api('/api/cases', { token: pathToken });
+
+  const after = (await api(`/api/cases/${c.id}/audit`, { token: pathToken })).body.length;
+  assert.equal(after, before, 'listing the queue must not add audit entries');
+});
+
 test('requesting a reset never reveals whether the account exists', async () => {
   const real = uniqueEmail('reset');
   await api('/api/auth/signup', {

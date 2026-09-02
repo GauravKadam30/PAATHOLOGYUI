@@ -170,6 +170,21 @@ export interface ResetCodeRow {
   attempts: number;
 }
 
+// --- Audit trail ---------------------------------------------------------------
+
+/** One thing that happened, as recorded for the audit trail. */
+export interface AuditEntry {
+  userId?: number | null;
+  userName?: string | null;
+  userRole?: string | null;
+  /** Dotted verb: 'login', 'case.view', 'note.save', 'report.sign', … */
+  action: string;
+  caseId?: number | null;
+  /** Anything worth knowing beyond the action itself, e.g. the note kind. */
+  detail?: string | null;
+  ip?: string | null;
+}
+
 // --- Backups -------------------------------------------------------------------
 
 export interface BackupResult {
@@ -243,6 +258,15 @@ export interface DataDriver {
   // Legacy key/value store (read-only in practice)
   getKV(key: string): Promise<unknown>;
   setKV(key: string, value: unknown): Promise<void>;
+
+  // Audit trail
+  /**
+   * Record one action. Deliberately returns void and never throws — see the
+   * implementation for why an audit write must not be able to fail a request.
+   */
+  writeAudit(entry: AuditEntry): Promise<void>;
+  /** Recent entries, newest first. For a case history view. */
+  readAudit(options?: { caseId?: number; limit?: number }): Promise<unknown[]>;
 
   // Maintenance
   backupDatabase(dir: string, keep?: number): Promise<BackupResult>;

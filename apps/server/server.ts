@@ -37,7 +37,7 @@
  * exporting them into the shell by hand every time.
  */
 import 'dotenv/config';
-import express, { type RequestHandler } from 'express';
+import express, { type RequestHandler, type Request } from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import fs from 'fs';
@@ -275,6 +275,12 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
   const user = role ? await db.getUserByEmailAndRole(trimmedEmail, role) : await db.getUserByEmail(trimmedEmail);
   if (user && verifyPassword(password || '', user.password_hash)) {
+    // Recorded before responding so a successful sign-in is on the record even
+    // if the response never reaches the client.
+    void db.writeAudit({
+      userId: user.id, userName: user.full_name, userRole: user.role,
+      action: 'login', ip: req.ip ?? null,
+    });
     return res.json({ token: signToken(user), user: publicUser(user) });
   }
 
@@ -445,6 +451,7 @@ app.put('/api/cases/:id/notes/:kind', authRequired, async (req, res) => {
   if (!await db.getCaseMeta(id)) return res.status(404).json({ error: 'Case not found.' });
   const body = typeof req.body?.body === 'string' ? req.body.body : '';
   await db.setNote(id, kind, body, req.user!.id);
+  audit(req, 'note.save', id, kind);
   res.json({ ok: true });
 });
 
@@ -456,8 +463,36 @@ app.put('/api/cases/:id/annotations', authRequired, async (req, res) => {
     return res.status(403).json({ error: 'Only a pathologist can annotate a slide.' });
   if (!await db.getCaseMeta(id)) return res.status(404).json({ error: 'Case not found.' });
   await db.setAnnotations(id, req.body ?? {}, req.user!.id);
+  audit(req, 'annotation.save', id);
   res.json({ ok: true });
 });
+
+// --- Audit trail --------------------------------------------------------------
+/**
+ * Record one action against the audit log.
+ *
+ * WHAT IS AND IS NOT LOGGED. Every write is recorded, plus OPENING a specific
+ * case. The worklist poll is NOT: it runs every four seconds per signed-in
+ * user, which would add roughly 900 rows an hour of pure noise and bury the
+ * entries that matter. "Who opened this patient's record" is answerable from
+ * case.view; "who listed the queue" is not worth the volume.
+ *
+ * Fire-and-forget by design — writeAudit swallows its own failures, so a
+ * clinical save never fails because the log was unavailable.
+ */
+function audit(req: Request, action: string, caseId?: number | string | null, detail?: string): void {
+  void db.writeAudit({
+    userId: req.user?.id ?? null,
+    userName: req.user?.full_name ?? null,
+    userRole: req.user?.role ?? null,
+    action,
+    caseId: caseId == null ? null : Number(caseId),
+    detail: detail ?? null,
+    // Behind a reverse proxy this is the proxy unless `trust proxy` is set.
+    // Recorded as Express reports it rather than trusting a client header.
+    ip: req.ip ?? null,
+  });
+}
 
 // ===== Cases ================================================================
 // List (metadata only — no images — so the queue loads fast).
@@ -473,7 +508,22 @@ app.get('/api/cases', authRequired, async (req, res) => res.json(await db.listCa
 app.get('/api/cases/:id', authRequired, async (req, res) => {
   const c = await db.getCase(String(req.params.id));
   if (!c) return res.status(404).json({ error: 'not found' });
+  // Fetching ONE case is a person opening a patient's record — the read worth
+  // recording. The worklist poll is not audited; see the note on `audit`.
+  audit(req, 'case.view', c.id);
   res.json(c);
+});
+
+/**
+ * The history of one case: who viewed, edited and signed it.
+ *
+ * Read-only, and there is no endpoint that edits or deletes audit rows — the
+ * trail is append-only by design.
+ */
+app.get('/api/cases/:id/audit', authRequired, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad case id.' });
+  res.json(await db.readAudit({ caseId: id, limit: Number(req.query.limit) || 100 }));
 });
 
 // Submit a new case — SIGN-IN REQUIRED, and only a lab attendant account may
@@ -523,6 +573,7 @@ app.post('/api/cases/:id/sign', authRequired, async (req, res) => {
   if (existing.reportedAt)
     return res.status(409).json({ error: 'This report has already been signed.' });
 
+  audit(req, 'report.sign', id);
   res.json(await db.signCaseReport(id, req.user!.id));
 });
 
@@ -530,6 +581,7 @@ app.patch('/api/cases/:id/archived', authRequired, async (req, res) => {
   const existing = await db.getCaseMeta(String(req.params.id));
   if (!existing) return res.status(404).json({ error: 'Case not found.' });
   const archived = req.body?.archived !== false;
+  audit(req, archived ? 'case.archive' : 'case.restore', String(req.params.id));
   res.json(await db.setCaseArchived(String(req.params.id), archived));
 });
 

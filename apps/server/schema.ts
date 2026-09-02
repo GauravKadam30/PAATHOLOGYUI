@@ -65,7 +65,9 @@ export const cases = pgTable('cases', {
   abha: text('abha'),
   nikshay: text('nikshay'),
   chcId: text('chc_id'),
-  createdBy: integer('created_by'),
+  // SET NULL, not CASCADE: a case must outlive the account that
+  // submitted it. Deleting a departed attendant must never delete patients.
+  createdBy: integer('created_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: text('created_at'),
   // Whole-slide image support — see db.js for the full explanation.
   slidePath: text('slide_path'),
@@ -94,7 +96,10 @@ export const cases = pgTable('cases', {
  * save touch exactly one row, and the conflict disappears.
  */
 export const caseNotes = pgTable('case_notes', {
-  caseId: integer('case_id').notNull(),
+  // CASCADE: a note has no meaning without its case. Before this constraint
+  // existed the database already held a note pointing at a case that was never
+  // there, and it was served to every client on every /api/notes call.
+  caseId: integer('case_id').notNull().references(() => cases.id, { onDelete: 'cascade' }),
   kind: text('kind').notNull(),          // 'clinical' | 'pathologist' | 'medicine'
   body: text('body').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -105,7 +110,7 @@ export const caseNotes = pgTable('case_notes', {
 
 /** A case's annotations, as fabric.js vector JSON (a few KB, not an image). */
 export const caseAnnotations = pgTable('case_annotations', {
-  caseId: integer('case_id').primaryKey(),
+  caseId: integer('case_id').primaryKey().references(() => cases.id, { onDelete: 'cascade' }),
   data: text('data').notNull(),
   updatedAt: text('updated_at').notNull(),
   updatedBy: integer('updated_by'),
@@ -130,3 +135,29 @@ export const kv = pgTable('kv', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
 });
+
+/**
+ * Append-only record of who did what.
+ *
+ * Separate from the tables it describes, and never updated or deleted in
+ * normal operation — an audit trail that can be edited is not an audit trail.
+ *
+ * `userName` and `userRole` are COPIES, not joins. An entry must still read
+ * correctly years later even if that account has since been renamed, changed
+ * role, or removed — the same reasoning as `reportedBy` on a signed case.
+ */
+export const auditLog = pgTable('audit_log', {
+  id: serial('id').primaryKey(),
+  at: text('at').notNull(),
+  userId: integer('user_id'),
+  userName: text('user_name'),
+  userRole: text('user_role'),
+  /** e.g. 'login', 'case.view', 'note.save', 'report.sign'. */
+  action: text('action').notNull(),
+  caseId: integer('case_id'),
+  detail: text('detail'),
+  ip: text('ip'),
+}, (t) => ({
+  caseIdx: index('idx_audit_case').on(t.caseId, t.id),
+  userIdx: index('idx_audit_user').on(t.userId, t.id),
+}));

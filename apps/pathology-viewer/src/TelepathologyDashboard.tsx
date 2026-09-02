@@ -29,9 +29,10 @@
  *   • <WsiViewer/> is lazy-loaded: it pulls in OpenSeadragon and fabric.js,
  *     which are most of the JavaScript here and aren't needed for the queue.
  *   • `viewerApiRef` is the handle onto the viewer — save / discard / export.
- *   • Demo patients (BASE_CASES) are hard-coded here and exist only in the
- *     browser; everything else comes from the server. That's why they can't
- *     be deleted and have no CHC ID.
+ *   • Every patient shown comes from the server. There were once three demo
+ *     patients hard-coded here, which looked like real rows but could not be
+ *     archived, had no CHC ID, and left orphaned notes in the database when
+ *     someone wrote against them.
  *
  * Theme: dark navy navigation rail + indigo accent, with clinical figures
  * (IDs, ages, dates) in a monospaced font.
@@ -81,15 +82,6 @@ const TOOLS = [
   { id: 'rect',     icon: Square,  label: 'Rectangle' },
   { id: 'oval',     icon: Circle,  label: 'Oval' },
   { id: 'eraser',   icon: Eraser,  label: 'Eraser' },
-];
-
-// The built-in demo patients. Kept outside the component for stable identity.
-// Patients submitted from the CHC intake app are fetched from the backend and
-// appended to these at runtime (see `cases` inside the component).
-const BASE_CASES: Case[] = [
-  { id: 1, patient: 'Patient A', age: 45, gender: 'F', site: 'Lymph Node', status: 'Pending', date: '2026-05-23', image: 'IMG-20260525-WA0002.jpg' },
-  { id: 2, patient: 'Patient B', age: 62, gender: 'M', site: 'Lymph Node', status: 'Pending', date: '2026-05-23', image: 'IMG-20260525-WA0003.jpg' },
-  { id: 3, patient: 'Patient C', age: 29, gender: 'F', site: 'Lymph Node', status: 'Pending', date: '2026-05-22', image: 'IMG-20260525-WA0005.jpg' },
 ];
 
 // Avatar background tints, chosen per patient by index so each row's circle
@@ -367,17 +359,25 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
 
   const viewerApiRef = useRef<WsiViewerHandle | null>(null);
 
-  // The queue = built-in demo patients + ones submitted from CHC intake.
-  const cases = useMemo<Case[]>(() => [...BASE_CASES, ...intakeCases], [intakeCases]);
+  // Every patient in the queue comes from the server.
+  const cases = intakeCases;
 
-  // Which case the URL points at. Falls back to the first available one so the
-  // slide/report views always have something to render even if the id is stale
-  // (a case archived in another tab, say).
-  const currentCase: Case = cases.find((c) => c.id === caseId) ?? cases[0]!;
-  const id = currentCase.id;
-  const defaultClinical = `Palpable nodule identified in the ${currentCase.site.toLowerCase()}.`;
-  // Which cases exist on the server (and so can be removed). The demo patients
-  // are hard-coded here, not stored anywhere, so they aren't deletable.
+  // Which case the URL points at, falling back to the first available one so a
+  // stale id (a case archived in another tab) still shows something.
+  //
+  // POSSIBLY UNDEFINED, and that is the honest type: with the demo patients
+  // gone the worklist really can be empty — a fresh install, or every case
+  // archived. It used to be asserted non-null with `!`, which was safe only
+  // because three hard-coded patients guaranteed the list was never empty.
+  // Removing them turned that assertion into a crash waiting to happen, so
+  // the screens below guard for it instead.
+  const currentCase: Case | undefined = cases.find((c) => c.id === caseId) ?? cases[0];
+  const id = currentCase?.id ?? 0;      // unused when there is no case to show
+  const defaultClinical = currentCase
+    ? `Palpable nodule identified in the ${String(currentCase.site ?? 'specimen').toLowerCase()}.`
+    : '';
+  // Which cases can be archived. Every case now comes from the server, so this
+  // is all of them — it stays as a set because the row still asks per case.
   const intakeIds = useMemo(() => new Set(intakeCases.map((c) => c.id)), [intakeCases]);
 
   // Remove a patient from the worklist. This ARCHIVES rather than destroys:
@@ -464,6 +464,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   // Download a flattened picture. Built ON DEMAND from the live canvas — the
   // flattened form is never stored, only generated when actually wanted.
   const exportAnnotations = async () => {
+    if (!currentCase) return;
     const dataURL = (await viewerApiRef.current?.exportPNG()) || legacyAnnotatedImages[id];
     if (dataURL) {
       const link = document.createElement('a');
@@ -517,6 +518,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
 
   /** Sign the report. Asks first — it records a name against a diagnosis. */
   const handleSignReport = async () => {
+    if (!currentCase) return;
     const ok = window.confirm(
       `Sign and submit the report for ${currentCase.patient}?`
       + ' This records your name against the diagnosis and marks the case as reported.',
@@ -535,6 +537,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   // a loading state rather than freezing the page while the slide overview
   // downloads and composites.
   const viewAnnotatedImage = async () => {
+    if (!currentCase) return;
     const marks = annotations[String(id)] ?? null;
     const legacy = legacyAnnotatedImages[String(id)] ?? null;
 
@@ -565,6 +568,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
     setModal((m) => (m && m.title === title ? ready : m));   // a different modal opened meanwhile — don't clobber it
   };
   const viewPathologistNotes = () => {
+    if (!currentCase) return;
     const text = pathologistSaved[String(id)];
     setModal({
       type: 'text',
@@ -889,6 +893,29 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   }
 
   /* ============ PAGE 3 — PRESCRIPTION / DETAILS ============ */
+  // Past this point every screen is about ONE patient, so with none to show
+  // there is nothing to render. This replaces an `!` assertion that was only
+  // ever safe because three hard-coded demo patients kept the list non-empty.
+  if (!currentCase) {
+    return (
+      <div className="h-[100dvh] rail-dark text-slate-900 overflow-hidden flex">
+        {railOpen
+          ? <Rail active="reports" count={cases.length} onNav={navigateTo} disabled={false} onToggle={() => setRailOpen(false)} user={user} onLogout={onLogout} />
+          : <RailCollapsed onToggle={() => setRailOpen(true)} />}
+        <div className="flex-1 min-w-0 clinical-bg flex flex-col items-center justify-center gap-3 text-slate-500">
+          <FileText className="w-8 h-8 text-slate-300" />
+          <p className="text-sm font-medium">That patient is no longer in the worklist.</p>
+          <button
+            onClick={() => navigate('/queue')}
+            className="mt-1 px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold tracking-wide hover:bg-indigo-500 transition-all"
+          >
+            Back to worklist
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (page === 'details') {
     return (
       <div className="h-[100dvh] rail-dark text-slate-900 overflow-hidden flex">
