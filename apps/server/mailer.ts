@@ -18,7 +18,22 @@ import nodemailer from 'nodemailer';
 
 const { SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS, MAIL_FROM } = process.env;
 
-export const isMailConfigured = !!(SMTP_HOST && SMTP_USER && SMTP_PASS);
+/**
+ * A value that is present but is obviously still the example text.
+ *
+ * .env ships with a filled-in SMTP block so only the password has to be
+ * pasted. Without this check that placeholder would count as configured, the
+ * server would stop printing codes to the console and start trying to email
+ * them, and every attempt would fail — leaving no way to complete a reset at
+ * all. Treating the placeholder as "not set yet" keeps the console fallback
+ * working right up until a real credential is supplied.
+ */
+const isPlaceholder = (v: string | undefined): boolean =>
+  !!v && /PASTE_|yourpassword|your-16-char|changeme|xxxx/i.test(v);
+
+export const isMailConfigured = !!(
+  SMTP_HOST && SMTP_USER && SMTP_PASS && !isPlaceholder(SMTP_PASS)
+);
 
 // Built once, lazily, so importing this module never touches the network —
 // only actually sending (or verifying) a message does.
@@ -50,8 +65,54 @@ export async function verifyMailer() {
     await getTransporter()!.verify();
     return { ok: true, configured: true };
   } catch (e) {
-    return { ok: false, configured: true, error: (e as Error).message };
+    return { ok: false, configured: true, error: explainSmtpError(e as Error) };
   }
+}
+
+/**
+ * Turn an SMTP failure into something you can act on.
+ *
+ * Providers report configuration mistakes as protocol codes, and the raw text
+ * usually sends people looking in the wrong place. Gmail answers a normal
+ * account password with "Username and Password not accepted", which reads like
+ * a typo but actually means "this account needs an App Password" — a different
+ * fix entirely. Each branch below maps a common failure to its real cause.
+ */
+export function explainSmtpError(e: Error): string {
+  const raw = e.message || String(e);
+  const code = (e as NodeJS.ErrnoException).code;
+  const hint = (...lines: string[]) => [raw, ...lines].join('\n');
+
+  if (/535|Username and Password not accepted|BadCredentials/i.test(raw)) {
+    return hint(
+      '  -> Gmail does not accept ordinary account passwords over SMTP.',
+      '     Create an App Password at https://myaccount.google.com/apppasswords',
+      '     (it only appears once 2-Step Verification is on) and use that',
+      '     16-character value as SMTP_PASS.',
+    );
+  }
+  if (/534|Application-specific password required/i.test(raw)) {
+    return hint('  -> This account has 2-Step Verification on and requires an App Password.');
+  }
+  // Nodemailer reports socket failures with its own code ('ESOCKET'), keeping
+  // the real reason only in the message — so both are checked. Matching on
+  // `code` alone silently missed every connection problem.
+  const failed = (needle: string) => code === needle || raw.includes(needle);
+
+  if (failed('ENOTFOUND') || /getaddrinfo/i.test(raw)) {
+    return hint('  -> SMTP_HOST could not be resolved. Check it for typos (smtp.gmail.com).');
+  }
+  if (failed('ETIMEDOUT') || failed('ECONNREFUSED')) {
+    return hint(
+      '  -> Nothing answered on that host and port. Either SMTP_HOST is wrong, or',
+      '     the network blocks outbound SMTP — some college and office networks do.',
+      '     Try port 465 with SMTP_SECURE=true, or a phone hotspot.',
+    );
+  }
+  if (/self.signed|certificate/i.test(raw)) {
+    return hint('  -> TLS mismatch. Use SMTP_SECURE=true for port 465, false for 587.');
+  }
+  return raw;
 }
 
 // Sends the reset code. Callers should check `isMailConfigured` first — this

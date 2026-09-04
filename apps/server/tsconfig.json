@@ -33,6 +33,6 @@
     /* Express handlers frequently ignore `next`; allow that without noise. */
     "noImplicitOverride": true
   },
-  "include": ["*.ts", "drivers/*.ts", "test/*.ts", "types.ts"],
-  "exclude": ["node_modules", "uploads", "backups", "tools"]
+  "include": ["*.ts", "test/*.ts", "tools/*.ts", "types.ts"],
+  "exclude": ["node_modules", "uploads", "backups"]
 }

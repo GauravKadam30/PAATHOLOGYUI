@@ -5,10 +5,11 @@
   "type": "module",
   "description": "Shared backend for the Telepathology Console \u2014 stores notes & annotated images so they sync across machines.",
   "scripts": {
-    "start": "tsx server.ts",
     "dev": "tsx server.ts",
+    "start": "tsx server.ts",
+    "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "mail:test": "tsx tools/mail-test.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",
