@@ -1,140 +1,40 @@
 /*
  * api.ts — the bridge between the CHC intake app and the backend.
  *
- * Covers three things:
- *   • Accounts — sign-up, login, profile edits, the two-step password reset.
- *     Logging in returns a token (a signed pass) which is kept in the browser
- *     and sent with every later request so the server knows who is calling.
- *   • Cases — submitting a patient.
- *   • Slides — uploading a scanner file, which needs a completely different
- *     mechanism from everything else here (see `uploadSlide`).
+ * Accounts, tokens and the password reset live in @telepathology/shared,
+ * because the pathology console needs exactly the same calls and the two
+ * copies had already drifted apart. What stays HERE is what only this app
+ * does: submitting a patient, and uploading a scanner slide.
  *
- * Every auth request carries role 'lab_attendant'. That is what separates
- * these accounts from the pathology console's, and is why the same email can
- * hold one account in each app.
+ * Every auth request from this app carries role 'lab_attendant'. That is what
+ * separates these accounts from the console's, and is why the same email can
+ * hold one account in each.
  */
-import type { User, IntakeForm, CreatedCase } from './types';
-
-// Where the backend lives. VITE_API_URL lets you point at another computer;
-// otherwise it's this same computer on port 3001.
-const RAW = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-export const API_BASE: string = RAW.replace(/\/+$/, '');
-
-// The login token is kept in the browser's localStorage so you stay signed in
-// even after a page refresh.
-const TOKEN_KEY = 'chc_token';
-export const getToken = (): string | null => localStorage.getItem(TOKEN_KEY);
-export const setToken = (t: string | null): void => {
-  if (t) localStorage.setItem(TOKEN_KEY, t);
-  else localStorage.removeItem(TOKEN_KEY);
-};
-
-// One small helper that does every request: attaches the token, sends/receives
-// JSON, and turns any server error into a readable message. Generic over the
-// response shape so callers get a real type instead of `any`.
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> | undefined),
-  };
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  const data = await res.json().catch(() => ({}));       // some errors have no body
-  if (!res.ok) {
-    throw new Error((data as { error?: string }).error || `Request failed (${res.status})`);
-  }
-  return data as T;
-}
-
-// --- Authentication ---
-// `role: 'lab_attendant'` is stamped on every request from this app (fixed,
-// not user-chosen) so the shared backend can tell a CHC account apart from a
-// Pathology Console account — same server, same users table, two account
-// types that can't sign into each other's portal.
-const ROLE = 'lab_attendant';
-
-/** What every auth endpoint sends back. */
-interface AuthResponse {
-  token: string;
-  user: User;
-}
-
-/** Fields accepted by signup. */
-export interface SignupPayload {
-  fullName: string;
-  chcName: string;
-  email: string;
-  password: string;
-}
-
-/** Create an account (user name + CHC name + email + password). */
-export async function signup(payload: SignupPayload): Promise<User> {
-  const data = await request<AuthResponse>('/api/auth/signup', {
-    method: 'POST',
-    body: JSON.stringify({ ...payload, role: ROLE }),
-  });
-  setToken(data.token);
-  return data.user;
-}
-
-/** Sign in to an existing account. */
-export async function login(payload: { email: string; password: string }): Promise<User> {
-  const data = await request<AuthResponse>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ ...payload, role: ROLE }),
-  });
-  setToken(data.token);
-  return data.user;
-}
-
-/** "Who am I?" using the saved token — restores the session on reopen. */
-export async function getMe(): Promise<User> {
-  const data = await request<{ user: User }>('/api/auth/me');
-  return data.user;
-}
-
-/** Sign out: just forget the token. */
-export function logout(): void {
-  setToken(null);
-}
-
-/** Edit profile: update the signed-in attendant's name + CHC. */
-export async function updateProfile(payload: { fullName: string; chcName: string }): Promise<User> {
-  const data = await request<{ user: User }>('/api/auth/profile', {
-    method: 'PATCH',
-    body: JSON.stringify(payload),
-  });
-  return data.user;
-}
+import { createApiClient } from '@telepathology/shared';
+import type { User, Credentials } from '@telepathology/shared';
+import type { IntakeForm, CreatedCase } from './types';
 
 /**
- * Forgot password, step 1: ask the server to issue a one-time code.
+ * This app's own client.
  *
- * The code is NOT returned here. It is emailed to the account, or — if the
- * backend has no mail server configured — printed on the server console for
- * the operator to hand over. Either way it's a real second factor, unlike the
- * previous flow which accepted email + name + CHC, all of which a colleague
- * already knows. The returned `message` describes whichever route was used,
- * so the UI can show something accurate without guessing.
+ * `chc_token` is deliberately NOT the key the console uses. The two apps run
+ * on separate origins so they have separate localStorage anyway, and keeping
+ * distinct keys means neither can read the other's session even if that ever
+ * stopped being true.
  */
-export async function requestReset(email: string): Promise<{ ok: true; message: string }> {
-  return request('/api/auth/request-reset', {
-    method: 'POST',
-    body: JSON.stringify({ email, role: ROLE }),
-  });
-}
+const client = createApiClient({ tokenKey: 'chc_token' });
 
-/** Forgot password, step 2: exchange the code for a new password. */
-export async function resetPassword(
-  payload: { email: string; code: string; newPassword: string },
-): Promise<{ ok: true }> {
-  return request('/api/auth/reset-password', {
-    method: 'POST',
-    body: JSON.stringify({ ...payload, role: ROLE }),
-  });
-}
+export const API_BASE = client.API_BASE;
+export const { getToken, setToken, request, getMe, logout, updateProfile } = client;
+
+/** Every account created here is a CHC lab attendant. */
+const ROLE = 'lab_attendant' as const;
+
+export const signup = (payload: Credentials): Promise<User> => client.signup(payload, ROLE);
+export const login = (payload: Credentials): Promise<User> => client.login(payload, ROLE);
+export const requestReset = (email: string) => client.requestReset(email, ROLE);
+export const resetPassword = (payload: { email: string; code: string; newPassword: string }) =>
+  client.resetPassword(payload, ROLE);
 
 // --- Cases ---
 

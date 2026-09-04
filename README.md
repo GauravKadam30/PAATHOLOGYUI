@@ -5,14 +5,19 @@ remotely: a CHC lab attendant registers a patient and uploads the slide, and a
 pathologist opens it in a deep-zoom viewer, annotates it, and records their
 consultation — with the two sides kept in sync through a shared backend.
 
-This repository is an **npm workspace** (monorepo) with three packages under
-`apps/`:
+This repository is an **npm workspace** (monorepo). Three apps under `apps/`:
 
 | App | Purpose |
 | --- | --- |
 | [`chc-intake`](apps/chc-intake) | The CHC portal — lab attendants register a patient and upload the slide image. |
 | [`pathology-viewer`](apps/pathology-viewer) | The pathologist portal — worklist, deep-zoom slide viewer, annotation, and consultation notes. |
 | [`server`](apps/server) | One Express API shared by both front-ends: accounts, cases, notes, annotations, and whole-slide tiling. |
+
+and one shared library under `packages/`:
+
+| Package | Purpose |
+| --- | --- |
+| [`@telepathology/shared`](packages/shared) | `Role`, `User`, and the account API both front-ends call. Ships raw TypeScript — the apps transpile it, so there is no build step. |
 
 ## Getting started
 

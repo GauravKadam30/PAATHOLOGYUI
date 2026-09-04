@@ -12,8 +12,10 @@
  * class of mistake before the code ever runs.
  */
 
-/** Which portal an account belongs to. The same email may hold one of each. */
-export type Role = 'lab_attendant' | 'pathologist' | 'physician';
+// `Role` and `User` come from @telepathology/shared, so this app and the CHC
+// intake app cannot disagree about what they mean. They once each declared
+// their own and had already drifted — intake's was missing 'physician'.
+export type { Role, User } from '@telepathology/shared';
 
 /**
  * What each role may edit on the report screen. The server enforces the same
@@ -24,16 +26,6 @@ export const CAN_EDIT: Record<string, { findings: boolean; prescription: boolean
   pathologist: { findings: true, prescription: false, annotate: true, sign: false },
   physician: { findings: false, prescription: true, annotate: false, sign: true },
 };
-
-/** A signed-in account, as returned by /api/auth/* (never includes the hash). */
-export interface User {
-  id: number;
-  email: string;
-  fullName: string;
-  /** Empty string for pathologists — they aren't tied to a health centre. */
-  chcName: string;
-  role: Role;
-}
 
 /** Review state of a case, shown as the coloured pill in the worklist. */
 export type CaseStatus = 'Pending' | 'Reported';

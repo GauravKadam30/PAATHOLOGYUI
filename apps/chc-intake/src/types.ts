@@ -1,24 +1,18 @@
 /**
- * types.ts — the shape of everything this app exchanges with the backend.
+ * types.ts — the shapes only THIS app uses.
  * ---------------------------------------------------------------------------
- * Deliberately a mirror of the pathology console's types.ts. The two apps talk
- * to the SAME backend, so a `User` here must mean exactly what a `User` means
- * there; keeping the definitions aligned is what stops the two drifting apart
- * as the API changes.
+ * `Role` and `User` are not here any more: they were declared separately in
+ * both front-ends and had already drifted apart — this file's `Role` was
+ * missing 'physician' long after the server and the console had gained it, so
+ * the same string meant different things depending on the bundle. They now
+ * come from @telepathology/shared, which has one definition matching the
+ * server's.
+ *
+ * Everything below is genuinely local: the intake form, its upload state, and
+ * the toast. Pulling those into the shared package would couple the two apps
+ * together for no benefit.
  */
-
-/** Which portal an account belongs to. The same email may hold one of each. */
-export type Role = 'lab_attendant' | 'pathologist';
-
-/** A signed-in account, as returned by /api/auth/* (never includes the hash). */
-export interface User {
-  id: number;
-  email: string;
-  fullName: string;
-  /** The lab attendant's health centre. Empty for pathologist accounts. */
-  chcName: string;
-  role: Role;
-}
+export type { Role, User } from '@telepathology/shared';
 
 /**
  * The intake form's fields, all held as strings because they come straight

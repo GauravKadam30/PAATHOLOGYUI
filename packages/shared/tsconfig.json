@@ -1,0 +1,23 @@
+{
+  // The package ships raw TypeScript — both consumers are Vite apps that
+  // transpile it themselves, so there is no build step and no dist/ to keep in
+  // sync. `moduleResolution: bundler` in the apps is what makes that work.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "skipLibCheck": true,
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src"]
+}
