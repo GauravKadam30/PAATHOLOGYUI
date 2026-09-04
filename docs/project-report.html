@@ -1,0 +1,375 @@
+<title>Telepathology Console — Project Report</title>
+<style>
+  /* Sized for A4 print-to-PDF. Browser: Ctrl+P -> Save as PDF, margins "Default". */
+  @page { size: A4; margin: 18mm 16mm; }
+
+  :root {
+    --ink:      #1a1a1a;
+    --muted:    #55606e;
+    --rule:     #d6dae0;
+    --accent:   #1f3a93;
+    --code-bg:  #f4f6f8;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: "Georgia", "Cambria", serif;
+    color: var(--ink);
+    line-height: 1.55;
+    font-size: 10.5pt;
+    max-width: 178mm;
+    margin: 0 auto;
+    padding: 0 0 12mm;
+    background: #fff;
+  }
+
+  h1 {
+    font-size: 19pt;
+    line-height: 1.25;
+    margin: 0 0 2mm;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: 13pt;
+    margin: 9mm 0 2.5mm;
+    padding-bottom: 1.2mm;
+    border-bottom: 1.5px solid var(--accent);
+    color: var(--accent);
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 11pt;
+    margin: 5mm 0 1.5mm;
+    color: var(--ink);
+    page-break-after: avoid;
+  }
+  p { margin: 0 0 3mm; text-align: justify; }
+  ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+  li { margin-bottom: 1.2mm; }
+
+  .subtitle { color: var(--muted); font-size: 11pt; margin: 0 0 5mm; font-style: italic; }
+
+  .meta {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 6mm;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 9.5pt;
+  }
+  .meta td { padding: 1.6mm 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .meta td:first-child { width: 38mm; color: var(--muted); }
+
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 4mm;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 9pt;
+    page-break-inside: avoid;
+  }
+  table.data th {
+    text-align: left;
+    background: var(--code-bg);
+    border-bottom: 1.5px solid var(--rule);
+    padding: 1.8mm 2mm;
+    font-weight: 600;
+  }
+  table.data td { padding: 1.6mm 2mm; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  table.data td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  code, .mono {
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 9pt;
+    background: var(--code-bg);
+    padding: 0.4mm 1mm;
+    border-radius: 2px;
+  }
+  pre {
+    background: var(--code-bg);
+    border-left: 2.5px solid var(--accent);
+    padding: 2.5mm 3mm;
+    margin: 0 0 4mm;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 8.5pt;
+    line-height: 1.4;
+    overflow-x: auto;
+    page-break-inside: avoid;
+  }
+  pre code { background: none; padding: 0; }
+
+  .note {
+    border-left: 2.5px solid var(--accent);
+    background: #f7f9fc;
+    padding: 2.5mm 3.5mm;
+    margin: 0 0 4mm;
+    font-size: 9.5pt;
+    page-break-inside: avoid;
+  }
+  .note strong { color: var(--accent); }
+
+  hr { border: none; border-top: 1px solid var(--rule); margin: 6mm 0; }
+  .footer { margin-top: 8mm; padding-top: 2mm; border-top: 1px solid var(--rule); font-size: 8.5pt; color: var(--muted); }
+</style>
+
+<h1>Telepathology Console</h1>
+<p class="subtitle">A web platform for remote FNAC whole-slide review, annotation and reporting
+between community health centres and pathologists</p>
+
+<table class="meta">
+  <tr><td>Intern</td><td><strong>Gaurav Satish Kadam</strong></td></tr>
+  <tr><td>Project duration</td><td>15 June 2026 &ndash; 4 September 2026</td></tr>
+  <tr><td>Repository</td><td class="mono">github.com/GauravKadam30/PAATHOLOGYUI</td></tr>
+  <tr><td>Scale</td><td>~7,700 lines across 4 workspaces; 24 REST endpoints; 7 database tables; 23 automated tests</td></tr>
+</table>
+
+<h2>1. Problem</h2>
+
+<p>A Community Health Centre can take a fine-needle aspiration sample and prepare a slide,
+but it rarely has a pathologist on site. The slide must physically travel to one, which
+takes days, risks breakage, and delays the start of treatment. For tuberculosis diagnosis,
+where FNAC is heavily used, that delay is clinically significant.</p>
+
+<p>Digitising the slide is only half an answer. A scanner produces images of a size that
+ordinary web tooling cannot handle: the slide used throughout this project is
+<strong>135,438 &times; 57,665 pixels</strong> &mdash; 7.8 billion pixels, 1.24&nbsp;GB on
+disk. No browser can decode that, and no rural connection can download it. Any workable
+system has to solve the image problem before it can solve the workflow problem.</p>
+
+<h2>2. What was built</h2>
+
+<p>A three-part system covering the whole consultation, from sample to prescription.</p>
+
+<table class="data">
+  <tr><th>Component</th><th>Who uses it</th><th>What it does</th></tr>
+  <tr>
+    <td><strong>CHC Intake portal</strong></td>
+    <td>Lab attendant</td>
+    <td>Registers a patient and uploads the slide &mdash; either an ordinary photograph or a gigapixel scanner file.</td>
+  </tr>
+  <tr>
+    <td><strong>Pathology Console</strong></td>
+    <td>Pathologist</td>
+    <td>Live worklist, deep-zoom slide viewer with a micron scale bar and magnification presets, annotation tools, and microscopic findings.</td>
+  </tr>
+  <tr>
+    <td><strong>Physician view</strong></td>
+    <td>Physician</td>
+    <td>Reads the findings and annotated slide, records a prescription, and signs the report, which closes the case.</td>
+  </tr>
+</table>
+
+<p>All three are served by one Express API over PostgreSQL, so every participant sees the
+same record rather than exchanging files.</p>
+
+<h2>3. Technical approach</h2>
+
+<h3>3.1 Serving gigapixel images</h3>
+
+<p>The viewer never receives the slide. A Python service backed by <strong>OpenSlide</strong>
+reads small Deep Zoom tiles out of the file on demand, and OpenSeadragon requests only the
+tiles covering the current view. Panning and zooming fetch a few kilobytes each.</p>
+
+<p>The alternative &mdash; pre-generating the full tile pyramid when a slide is uploaded &mdash;
+was implemented and measured first, then rejected:</p>
+
+<table class="data">
+  <tr><th>Approach</th><th class="num">Preparation</th><th class="num">Extra storage</th><th class="num">Tile latency</th></tr>
+  <tr><td>Pre-generated pyramid</td><td class="num">~20 minutes</td><td class="num">2.2 GB per slide</td><td class="num">~1 ms</td></tr>
+  <tr><td><strong>On demand (adopted)</strong></td><td class="num">none</td><td class="num">none</td><td class="num">~20 ms</td></tr>
+</table>
+
+<p>Twenty milliseconds is imperceptible while panning, so the on-demand design trades a
+latency nobody notices for twenty minutes and 2.2&nbsp;GB that everybody pays. The service
+holds a small LRU cache of open slide handles, because opening a gigabyte file is the
+expensive part, not reading from one.</p>
+
+<div class="note">
+  <strong>Why a separate Python process.</strong> OpenSlide is a native C library with no
+  JavaScript equivalent. Rather than compromise on format support, the API starts Python as
+  a supervised child process &mdash; restarted automatically with exponential backoff if it
+  dies &mdash; and proxies tile requests to it, so the browser only ever talks to one origin.
+</div>
+
+<h3>3.2 Annotations that stay anchored</h3>
+
+<p>Marks are stored in <strong>image coordinates</strong> and re-projected onto the screen
+every frame, so a circle drawn around a cluster of cells stays on those cells through any
+amount of zooming and panning.</p>
+
+<p>They are also stored as <strong>vector data</strong> rather than as a flattened picture.
+An earlier design composited the slide and the drawing into a PNG: about 16&nbsp;MB per
+case, and permanently uneditable. The same two shapes as vectors are roughly
+<strong>1.2&nbsp;KB</strong>, and remain editable after reloading.</p>
+
+<h3>3.3 Clinical correctness</h3>
+
+<ul>
+  <li><strong>A micron scale bar and 4&times;/10&times;/20&times;/40&times; magnification presets</strong>
+      derived from the scanner's own calibration. Where a slide carries no calibration, no
+      scale is shown at all &mdash; an invented measurement on a diagnostic image is worse
+      than none.</li>
+  <li><strong>One row per note</strong>, per case and per kind. An earlier design stored every
+      patient's notes as a single document, so two clinicians saving at the same moment
+      silently destroyed one of the two sets of notes.</li>
+  <li><strong>Archive instead of delete.</strong> A mistaken removal is recoverable; clinical
+      records are rarely safe to destroy.</li>
+</ul>
+
+<h2>4. Security and access control</h2>
+
+<p>Three roles map onto the three people in a consultation, and the split is enforced on the
+server rather than merely hidden in the interface:</p>
+
+<table class="data">
+  <tr><th>Action</th><th>Lab attendant</th><th>Pathologist</th><th>Physician</th></tr>
+  <tr><td>Submit a patient and slide</td><td>yes</td><td>&mdash;</td><td>&mdash;</td></tr>
+  <tr><td>Annotate a slide</td><td>&mdash;</td><td>yes</td><td>&mdash;</td></tr>
+  <tr><td>Write microscopic findings</td><td>&mdash;</td><td>yes</td><td>read only</td></tr>
+  <tr><td>Write the prescription</td><td>&mdash;</td><td>read only</td><td>yes</td></tr>
+  <tr><td>Sign and submit the report</td><td>&mdash;</td><td>&mdash;</td><td>yes</td></tr>
+</table>
+
+<p>Separating pathologist from physician is not bookkeeping. One account writing both the
+microscopic findings and the prescription removes the second opinion the workflow exists to
+provide, and leaves an audit unable to say who did which half.</p>
+
+<h3>4.1 Authentication</h3>
+
+<ul>
+  <li><strong>scrypt</strong> password hashing with a random per-user salt. scrypt is
+      memory-hard, which resists GPU-accelerated cracking in a way plain SHA-256 does not.</li>
+  <li><strong>HMAC-SHA256 signed tokens</strong> carrying a version counter, so raising one
+      column invalidates every token already issued for an account &mdash; the revocation that
+      stateless tokens normally lack.</li>
+  <li><strong>Constant-time comparison</strong> for both passwords and tokens, so response
+      timing does not leak how much of a value was correct.</li>
+  <li><strong>Password reset by one-time code</strong>, stored only as a hash, expiring in
+      fifteen minutes, capped at five attempts, and answering identically whether or not the
+      account exists so it cannot be used to discover registered addresses.</li>
+</ul>
+
+<h3>4.2 A defect found and fixed</h3>
+
+<div class="note">
+  Midway through the project an audit found that <strong>every read endpoint was
+  unauthenticated</strong>. The login system was sound; it simply was not applied to the
+  routes serving data, because those had been written before authentication existed and used
+  a bare request with no headers. A request with no credentials returned the full patient
+  list, every clinical note, and the slide images. One endpoint also accepted anonymous
+  <em>writes</em>.
+  <br><br>
+  Both halves were fixed together &mdash; the server now requires a session, and the client
+  attaches its token &mdash; and five tests were added so the hole cannot reopen unnoticed.
+</div>
+
+<h3>4.3 Audit trail</h3>
+
+<p>An append-only log records sign-ins, case openings, note saves, annotation saves, slide
+uploads and report sign-offs, with the actor's name and role copied in rather than joined,
+so an entry still reads correctly years later if that account is renamed or removed.</p>
+
+<p>Routine worklist polling is deliberately <em>not</em> logged. It runs every four seconds
+per signed-in user and would add roughly 900 rows an hour of noise, burying the entries that
+matter. Opening one patient's record is logged; listing the queue is not.</p>
+
+<h2>5. Architecture</h2>
+
+<pre><code>Browser (CHC intake)          Browser (pathology console)
+        |                              |
+        +---------- HTTP / JSON -------+
+                       |
+              Express API (Node)
+              routers: auth | cases | slides
+                  |              |
+           PostgreSQL      Python tile service
+           7 tables        (OpenSlide, Deep Zoom)
+                                 |
+                          slide files on disk</code></pre>
+
+<p>The codebase is an npm workspace with four packages: the two front-ends, the API, and a
+shared library holding the account types and API calls both front-ends need.</p>
+
+<h3>5.1 Decisions worth recording</h3>
+
+<ul>
+  <li><strong>Two front-ends, not one.</strong> Merging them would make a CHC attendant
+      download the console's 599&nbsp;KB bundle instead of 176&nbsp;KB to fill in a form, on
+      exactly the connections least able to afford it. Separate origins also keep the two
+      sessions isolated from one another.</li>
+  <li><strong>A shared package for what genuinely repeated.</strong> The account types and
+      calls existed twice and had already drifted &mdash; the intake app's role type had never
+      gained <span class="mono">physician</span>, so the same string meant different things in
+      different bundles. One definition makes that impossible.</li>
+  <li><strong>The heavy viewer is lazily loaded.</strong> OpenSeadragon and Fabric.js are
+      349&nbsp;KB and are not fetched until a slide is actually opened.</li>
+  <li><strong>Incremental polling.</strong> The worklist sends the newest timestamp it holds
+      and receives only what changed, so an idle queue transfers an empty array rather than
+      every case every four seconds.</li>
+</ul>
+
+<h2>6. Engineering practice</h2>
+
+<table class="data">
+  <tr><th>Practice</th><th>Detail</th></tr>
+  <tr><td>Type safety</td><td>TypeScript in strict mode across all four workspaces; the build fails on a type error.</td></tr>
+  <tr><td>Testing</td><td>23 integration tests against a real server and a throwaway database, covering authentication, role permissions, concurrent saves, and incremental polling.</td></tr>
+  <tr><td>Test-data safety</td><td>The suite derives its own database name and refuses to run if it ever resolves to the same one as the live database.</td></tr>
+  <tr><td>Referential integrity</td><td>Foreign keys with explicit delete behaviour. Notes cascade with their case; a case survives the deletion of the account that submitted it.</td></tr>
+  <tr><td>Backups</td><td>A database snapshot at startup and daily thereafter, pruned to the newest seven.</td></tr>
+  <tr><td>Configuration</td><td>Entirely environment variables. The server refuses to start in production without a real signing key rather than falling back to a published one.</td></tr>
+</table>
+
+<div class="note">
+  <strong>Types earning their place.</strong> Introducing strict TypeScript surfaced two live
+  defects. Saved clinical notes were never displayed &mdash; the text areas read only the
+  unsaved draft, so text reached the server and then became invisible. And a guard checking
+  that an account still existed compared against a pending promise, which is always truthy,
+  so a deleted account would have passed. Both were found by the compiler, not by testing.
+</div>
+
+<h2>7. Results</h2>
+
+<table class="data">
+  <tr><th>Measure</th><th class="num">Result</th></tr>
+  <tr><td>Largest slide handled</td><td class="num">1.24 GB &mdash; 135,438 &times; 57,665 px</td></tr>
+  <tr><td>Upload time for that slide</td><td class="num">3.9 s (local network)</td></tr>
+  <tr><td>Tile latency</td><td class="num">~20 ms</td></tr>
+  <tr><td>Preprocessing eliminated per slide</td><td class="num">20 min, 2.2 GB</td></tr>
+  <tr><td>Annotation storage</td><td class="num">16 MB &rarr; 1.2 KB</td></tr>
+  <tr><td>Annotation anchoring accuracy</td><td class="num">sub-pixel across a 60&times; zoom range</td></tr>
+  <tr><td>Scale bar accuracy</td><td class="num">199.8 px drawn where 200 px required</td></tr>
+  <tr><td>Deferred JavaScript on first load</td><td class="num">37%</td></tr>
+</table>
+
+<h2>8. Limitations and further work</h2>
+
+<ul>
+  <li><strong>Upload is not resumable.</strong> A 1.2&nbsp;GB slide over a 2&nbsp;Mbps rural
+      connection takes about 85 minutes as a single request; a dropped connection starts
+      over. Chunked, resumable transfer is the highest-value next piece of work.</li>
+  <li><strong>No notifications.</strong> Each participant must check the queue. Notably a
+      slide that fails to convert tells nobody, so the uploader may assume it succeeded.</li>
+  <li><strong>Single instance.</strong> The rate limiter keeps its counters in memory, so
+      running more than one copy of the API would multiply every limit.</li>
+  <li><strong>Not deployed.</strong> The tile service depends on a native library, so it needs
+      a container rather than a serverless host, and slide storage needs a persistent volume
+      that grows by roughly a terabyte per twenty slides a day.</li>
+  <li><strong>Export resolution.</strong> The annotated image exports at 4,096 px &mdash; about
+      3% of native width. Exporting the annotated <em>region</em> at full resolution would be
+      more useful diagnostically than the whole slide reduced.</li>
+</ul>
+
+<h2>9. Conclusion</h2>
+
+<p>The imaging problem is solved: a gigapixel slide opens in a browser in seconds over an
+ordinary connection, annotations stay anchored to the tissue, and three clinical roles share
+one record with their responsibilities separated and recorded. The remaining gap is upload
+rather than viewing &mdash; getting the slide <em>to</em> the system is now the slow step, and
+resumable transfer is what would make the platform dependable on the connections it is
+designed for.</p>
+
+<div class="footer">
+  Telepathology Console &middot; Internship project report &middot; Gaurav Satish Kadam &middot;
+  15 June &ndash; 4 September 2026
+</div>

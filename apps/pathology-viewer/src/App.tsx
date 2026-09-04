@@ -194,8 +194,13 @@ function App() {
     // Send them back to the door they came in by. Without this a physician who
     // signs out lands on /queue, and the login form there would create a
     // PATHOLOGIST account the next time they sign up.
+    // The existing state is carried over rather than replaced with {}. React
+    // Router stores its position in the history stack there, and discarding it
+    // is what broke the Back button in the viewer's full-screen control — see
+    // the long note in WsiViewer.tsx. Harmless here, since the router unmounts
+    // on sign-out anyway, but there is no reason to repeat the pattern.
     if (wasPhysician && !window.location.pathname.startsWith(PHYSICIAN_PATH)) {
-      window.history.replaceState({}, '', PHYSICIAN_PATH);
+      window.history.replaceState(window.history.state, '', PHYSICIAN_PATH);
     }
     // Drop any cached patient data — the next person to sign in on this
     // machine must not see the previous user's worklist from cache. The

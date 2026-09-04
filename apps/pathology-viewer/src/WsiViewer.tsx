@@ -479,31 +479,33 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
   // --- Custom full-screen ("full page") mode ---
   // OSD's built-in setFullPage moves only its own div onto the bare (white) page
   // body, leaving our annotation layer and controls behind. Instead we expand
-  // the WHOLE viewer block on a dark background. We also push a history entry so
-  // the browser/phone Back button exits full screen instead of leaving the app;
-  // Escape works too.
-  const enterFullPage = () => {
-    setIsFullPage(true);
-    window.history.pushState({ wsiFullPage: true }, '');
-  };
-  const exitFullPage = useCallback(() => {
-    // If we added a history entry, go back (which fires popstate -> exit);
-    // otherwise just flip the flag directly.
-    if (window.history.state?.wsiFullPage) window.history.back();
-    else setIsFullPage(false);
-  }, []);
+  // the WHOLE viewer block on a dark background.
+  //
+  // THIS DELIBERATELY DOES NOT TOUCH BROWSER HISTORY, and that is a fix rather
+  // than an omission. It used to push an entry so the Back button would exit
+  // full screen:
+  //
+  //     window.history.pushState({ wsiFullPage: true }, '');
+  //
+  // but a raw pushState REPLACES the state React Router keeps there — it tracks
+  // its position in the stack as `{ idx: n }`. The entry left behind had no
+  // idx, and it outlived full screen: after using the control once, a
+  // pathologist looking at a slide could press Back and watch nothing happen,
+  // because that press was silently spent on the phantom entry. Reaching the
+  // worklist took two presses, the first appearing broken.
+  //
+  // Escape and the on-screen Exit control both still work. The cost is that a
+  // phone's Back button now leaves the slide instead of exiting full screen —
+  // a far smaller price than Back not working anywhere in the app.
+  const enterFullPage = () => setIsFullPage(true);
+  const exitFullPage = useCallback(() => setIsFullPage(false), []);
 
-  // While in full screen, listen for the Back button (popstate) and Escape key.
+  // Escape exits full screen. No popstate listener: nothing is pushed now.
   useEffect(() => {
     if (!isFullPage) return;
-    const onPop = () => setIsFullPage(false);
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') exitFullPage(); };
-    window.addEventListener('popstate', onPop);
     window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('popstate', onPop);
-      window.removeEventListener('keydown', onKey);
-    };
+    return () => window.removeEventListener('keydown', onKey);
   }, [isFullPage, exitFullPage]);
 
   // Toggling full page resizes the container without firing a window 'resize'
