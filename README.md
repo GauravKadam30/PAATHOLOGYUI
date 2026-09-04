@@ -197,7 +197,13 @@ Restart the dev server after changing it.
 
 | File | Responsibility |
 | --- | --- |
-| `server.ts` | The route table — which URL does what, and who may call it. |
+| `server.ts` | Wiring only — middleware, router mounts, startup. Nothing routes here. |
+| `routes/auth.ts` | Sign-up, login, profile, password reset. Mounted at `/api/auth`. |
+| `routes/cases.ts` | Patients, notes, annotations, sign-off. Mounted at `/api`. |
+| `routes/slides.ts` | Slide upload and status (`/api`), Deep Zoom tiles (`/slides`). |
+| `lib/tiles.ts` | Slide storage on disk, multer, and the Python tile service. |
+| `lib/rate-limit.ts` | In-memory request limiter (per process — see the note inside). |
+| `lib/audit.ts` | Writes the audit trail; decides what is and isn't recorded. |
 | `auth.ts` | Password hashing, token issuing, and the `authRequired` guard. |
 | `types.ts` | Domain types and the `DataDriver` contract the data layer implements. |
 | `db.ts` | Opens the database, creates missing tables, re-exports the data API. |
@@ -205,4 +211,5 @@ Restart the dev server after changing it.
 | `schema.ts` | Drizzle table definitions. |
 | `mailer.ts` | Sending password-reset codes over SMTP. |
 | `tools/tile_server.py` | On-demand Deep Zoom tiling of whole-slide files. |
+| `tools/mail-test.ts` | `npm run mail:test` — check SMTP without starting the app. |
 | `test/api.test.ts` | API test suite; runs against a throwaway database it creates. |
