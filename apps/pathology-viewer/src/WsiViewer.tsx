@@ -66,6 +66,10 @@ const ERASER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
 // turret. The conventional mapping between an objective and the scan
 // resolution it corresponds to is 10/M microns per pixel — a 40x objective is
 // ~0.25 µm/px, 20x is ~0.5, 10x is ~1.0, 4x is ~2.5.
+// One wheel notch's worth of zoom, matching OpenSeadragon's own default so
+// scrolling feels identical whether or not a drawing tool is active.
+const ZOOM_PER_SCROLL = 1.2;
+
 const MAGNIFICATION_PRESETS = [4, 10, 20, 40];
 const MICRONS_PER_PIXEL_AT_1X = 10;
 
@@ -153,6 +157,7 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
 }, ref) => {
   // --- Refs hold long-lived objects/DOM nodes that must survive re-renders ---
   const viewerRef = useRef<OpenSeadragon.Viewer | null>(null);   // the OpenSeadragon viewer instance
+  const rootRef = useRef<HTMLDivElement | null>(null);           // outer box; ancestor of every layer, so wheel events reach it
   const containerRef = useRef<HTMLDivElement | null>(null);      // the <div> OpenSeadragon renders into
   const canvasElRef = useRef<HTMLDivElement | null>(null);       // wrapper <div> that holds the fabric canvas
   const fabricRef = useRef<FabricModule.Canvas | null>(null);    // the fabric.Canvas instance
@@ -446,23 +451,67 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
     };
   }, [isReady, caseData, syncViewport]);
 
-  // --- React to annotation mode turning on/off ---
+  // --- Hand the mouse to the drawing tools, but only once one is chosen ---
+  // Gated on `canDraw`, NOT on annotationMode. Turning navigation off for the
+  // whole of annotation mode froze the slide the moment the mode opened: with
+  // no tool selected there is no capture overlay either, so the viewer simply
+  // stopped responding to the mouse and could be neither panned nor zoomed.
+  // With a tool active the overlay covers the viewer anyway, so drags reach the
+  // canvas rather than OpenSeadragon regardless of this setting.
   useEffect(() => {
     if (!viewerRef.current) return;
-    // While drawing, disable OSD's own mouse pan/zoom so dragging draws instead.
-    viewerRef.current.setMouseNavEnabled(!annotationMode);
+    viewerRef.current.setMouseNavEnabled(!canDraw);
     // `innerTracker` is real and public in OpenSeadragon but missing from its
     // bundled .d.ts, so it needs a narrow cast rather than an `any` viewer.
     (viewerRef.current as unknown as { innerTracker: { setTracking(v: boolean): void } })
-      .innerTracker.setTracking(!annotationMode);
-    // Snapshot the canvas as it stands when the session begins — including
-    // any previously saved marks. "Don't save" rolls back to THIS, i.e. the
-    // last saved state, rather than wiping the case's whole history as it did
-    // when annotations were flattened into an image.
+      .innerTracker.setTracking(!canDraw);
+  }, [canDraw]);
+
+  // --- Snapshot the canvas when an annotation session begins ---
+  // Includes any previously saved marks. "Don't save" rolls back to THIS, i.e.
+  // the last saved state, rather than wiping the case's whole history as it did
+  // when annotations were flattened into an image.
+  useEffect(() => {
     if (annotationMode && fabricRef.current) {
       baselineRef.current = fabricRef.current.toJSON();
     }
   }, [annotationMode]);
+
+  // --- Scroll-to-zoom while a drawing tool is active ---
+  // With a tool selected, the transparent capture overlay sits above the
+  // viewer, so wheel events land on it and never reach OpenSeadragon — leaving
+  // the slide stuck at whatever magnification it happened to be on. Zooming is
+  // exactly what a pathologist needs mid-annotation (mark a field at 40x, pull
+  // back, move to the next one), so the wheel is forwarded to the viewport by
+  // hand.
+  //
+  // This is a NATIVE listener with { passive: false } on purpose. React
+  // registers its own wheel handlers passively at the root, where
+  // preventDefault() is ignored — the slide would zoom and the page would
+  // scroll behind it at the same time.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || !canDraw) return;
+
+    const onWheel = (e: WheelEvent) => {
+      const viewer = viewerRef.current;
+      if (!viewer) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? ZOOM_PER_SCROLL : 1 / ZOOM_PER_SCROLL;
+      // Zoom about the pointer, as OpenSeadragon's own scroll-to-zoom does.
+      // Zooming about the centre instead would slide the tissue under the
+      // cursor out from under it, which is disorienting at high magnification.
+      const box = root.getBoundingClientRect();
+      const at = viewer.viewport.pointFromPixel(
+        new OpenSeadragon.Point(e.clientX - box.left, e.clientY - box.top),
+      );
+      viewer.viewport.zoomBy(factor, at);
+      viewer.viewport.applyConstraints();
+    };
+
+    root.addEventListener('wheel', onWheel, { passive: false });
+    return () => root.removeEventListener('wheel', onWheel);
+  }, [canDraw]);
 
   // Existing marks are selectable/movable only while annotating; the rest of
   // the time they are inert decoration over the slide.
@@ -735,9 +784,11 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
   return (
     // Outer box. In full screen it becomes a fixed, dark overlay covering the
     // whole window; otherwise it just fills its parent.
-    <div className={isFullPage
-      ? 'fixed inset-0 z-[90] bg-slate-950'
-      : 'w-full h-full bg-slate-900 relative'}>
+    <div
+      ref={rootRef}
+      className={isFullPage
+        ? 'fixed inset-0 z-[90] bg-slate-950'
+        : 'w-full h-full bg-slate-900 relative'}>
       {/* Layer 1: OpenSeadragon renders the slide into this div. */}
       <div ref={containerRef} className="w-full h-full absolute inset-0" />
 
@@ -907,31 +958,38 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
       )}
 
       {/* Custom navigation controls (replace OSD's default sprite buttons).
-          Hidden during annotation, when pan/zoom is locked anyway. Each entry
-          in the array becomes one icon button; we map over them to avoid repeating markup. */}
-      {!annotationMode && (
-        <div className="absolute bottom-5 left-5 z-[65] flex flex-col gap-1.5 p-1.5 rounded-2xl bg-slate-900/80 backdrop-blur ring-1 ring-slate-700/60 shadow-lg">
-          {[
-            { title: 'Zoom in',  Icon: ZoomIn,  onClick: () => { const v = viewerRef.current; if (v) { v.viewport.zoomBy(1.4); v.viewport.applyConstraints(); } } },
-            { title: 'Zoom out', Icon: ZoomOut, onClick: () => { const v = viewerRef.current; if (v) { v.viewport.zoomBy(1 / 1.4); v.viewport.applyConstraints(); } } },
-            { title: 'Reset view', Icon: Home,  onClick: () => viewerRef.current?.viewport.goHome() },
-            {
-              title: isFullPage ? 'Exit full screen (Esc)' : 'Full screen',
-              Icon: isFullPage ? Minimize : Maximize,
-              onClick: () => (isFullPage ? exitFullPage() : enterFullPage()),
-            },
-          ].map(({ title, Icon, onClick }) => (
-            <button
-              key={title}
-              title={title}
-              onClick={onClick}
-              className="p-2 rounded-xl text-slate-300 hover:text-white hover:bg-slate-700/80 active:scale-90 transition-all"
-            >
-              <Icon className="w-4 h-4" />
-            </button>
-          ))}
-        </div>
-      )}
+          SHOWN IN ANNOTATION MODE TOO. These were previously hidden there, on
+          the reasoning that pan/zoom was locked anyway — but entering the mode
+          also killed scroll-to-zoom, so between the two a pathologist had no
+          way whatsoever to change magnification while marking up a slide. The
+          wheel is now forwarded to the viewport while drawing (see the wheel
+          effect above), so these work throughout, and keeping them mounted
+          means the cluster no longer appears and vanishes as the mode toggles.
+
+          They sit at z-65, above the z-60 capture overlay, so a click lands on
+          the button rather than starting a stroke. Each entry in the array
+          becomes one icon button; we map over them to avoid repeating markup. */}
+      <div className="absolute bottom-5 left-5 z-[65] flex flex-col gap-1.5 p-1.5 rounded-2xl bg-slate-900/80 backdrop-blur ring-1 ring-slate-700/60 shadow-lg">
+        {[
+          { title: 'Zoom in',  Icon: ZoomIn,  onClick: () => { const v = viewerRef.current; if (v) { v.viewport.zoomBy(1.4); v.viewport.applyConstraints(); } } },
+          { title: 'Zoom out', Icon: ZoomOut, onClick: () => { const v = viewerRef.current; if (v) { v.viewport.zoomBy(1 / 1.4); v.viewport.applyConstraints(); } } },
+          { title: 'Reset view', Icon: Home,  onClick: () => viewerRef.current?.viewport.goHome() },
+          {
+            title: isFullPage ? 'Exit full screen (Esc)' : 'Full screen',
+            Icon: isFullPage ? Minimize : Maximize,
+            onClick: () => (isFullPage ? exitFullPage() : enterFullPage()),
+          },
+        ].map(({ title, Icon, onClick }) => (
+          <button
+            key={title}
+            title={title}
+            onClick={onClick}
+            className="p-2 rounded-xl text-slate-300 hover:text-white hover:bg-slate-700/80 active:scale-90 transition-all"
+          >
+            <Icon className="w-4 h-4" />
+          </button>
+        ))}
+      </div>
     </div>
   );
 });
