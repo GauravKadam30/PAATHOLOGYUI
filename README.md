@@ -144,8 +144,15 @@ on demand opens the same slide in seconds and stores nothing extra.
 It needs Python with:
 
 ```bash
-pip install openslide-bin pillow
+pip install openslide-bin openslide-python pillow
 ```
+
+Three packages, and the split catches people out. `openslide-bin` ships the
+compiled **C library**; `openslide-python` is the **binding** that provides
+`import openslide`; Pillow encodes the tiles. Installing only the first
+succeeds quietly and then fails at import with `ModuleNotFoundError: No module
+named 'openslide'`, which looks like a broken install rather than a missing
+package.
 
 Without it, everything else still works — ordinary uploaded photos are
 unaffected, and only `.tiff` viewing is unavailable.
