@@ -240,6 +240,8 @@ export interface DataDriver {
   setSlidePending(id: number | string, slidePath: string | null): Promise<void>;
   setSlideReady(id: number | string, dziPath: string): Promise<void>;
   setSlideFailed(id: number | string, message: string): Promise<void>;
+  /** Undo a slide: clears path, status and error, leaving the case itself. */
+  clearSlide(id: number | string): Promise<void>;
   failStaleProcessingSlides(): Promise<void>;
 
   // Notes & annotations

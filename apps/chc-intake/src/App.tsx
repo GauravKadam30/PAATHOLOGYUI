@@ -8,14 +8,17 @@
  *   3. When "Submit" is pressed, it sends everything to the backend so the new
  *      patient appears in the Pathology Viewer.
  */
-import { useState, useEffect } from 'react';                 // React's way to "remember" values
+import { useState, useEffect, useRef } from 'react';         // React's way to "remember" values
 import { CheckCircle2, AlertCircle, X, Loader2 } from 'lucide-react'; // small icons
 import Header from './Header';                               // the top bar
 import PatientForm from './PatientForm';                     // the patient details card
 import ConsultantForm from './ConsultantForm';              // the consultant / OPD notes card
 import FileUpload from './FileUpload';                       // the upload box on the right
 import Login from './Login';                                 // the sign-in / sign-up screen
-import { addCase, uploadSlide, isSlideFile, getMe, getToken, logout } from './api'; // backend + auth helpers
+import {
+  addCase, uploadSlideResumable, cancelSlideUpload, UploadCancelled,
+  isSlideFile, getMe, getToken, logout,
+} from './api';                                             // backend + auth helpers
 import type { User, IntakeForm, Toast } from './types';
 
 // The starting (blank) value for every form field.
@@ -80,6 +83,25 @@ function App() {
   // upload — it can take minutes for a gigabyte-scale file.
   const [slideFile, setSlideFile] = useState<File | null>(null);
   const [uploadPct, setUploadPct] = useState<number | null>(null);
+  // Bytes the SERVER has confirmed, for the "142 MB of 766 MB" readout. Comes
+  // from the upload's own progress callback, which reports acknowledged bytes
+  // rather than bytes handed to the network — so it never races ahead and then
+  // jumps backwards when a piece has to be retried.
+  const [uploadSent, setUploadSent] = useState<{ sent: number; total: number } | null>(null);
+
+  // Set once the case row exists but its slide does not — which is the state a
+  // cancelled upload leaves behind.
+  //
+  // The case is deliberately NOT deleted on cancel. This system archives rather
+  // than deletes, and the CHC Patient ID is unique per health centre, so a
+  // deleted-then-resubmitted patient would collide with their own record.
+  // Remembering the id instead means the next submit attaches the correct slide
+  // to the patient already registered, with nothing to re-enter.
+  const [pendingCaseId, setPendingCaseId] = useState<number | string | null>(null);
+
+  // Lets the Cancel button stop an upload mid-flight. Held in a ref rather than
+  // state because aborting must not wait for a re-render.
+  const abortRef = useRef<AbortController | null>(null);
 
   // Sign out: forget the token and drop back to the login screen.
   const handleLogout = () => { logout(); setUser(null); };
@@ -130,7 +152,12 @@ function App() {
       // Step 1 — create the case. For a scanner slide `image` is null here;
       // the file follows in step 2, because it streams to disk on the server
       // and needs the case id to know where to put it.
-      const created = await addCase({
+      // Reuse the patient already registered by a submit whose upload was
+      // cancelled, rather than creating a second record for the same person —
+      // which the unique CHC Patient ID would reject anyway.
+      const created = pendingCaseId != null
+        ? { id: pendingCaseId }
+        : await addCase({
         patient: form.name.trim(),
         age: form.age,
         gender: form.gender,
@@ -144,12 +171,29 @@ function App() {
         notes: form.notes.trim(),
         image,
       });
+      setPendingCaseId(created.id);
 
       // Step 2 — upload the slide file itself, if this was a scanner slide.
+      // Sent in ~5 MB resumable pieces: a dropped connection costs one piece
+      // instead of the whole file, which is the difference between this working
+      // and not working on a CHC's uplink.
       if (slideFile) {
         setUploadPct(0);
-        await uploadSlide(created.id, slideFile, setUploadPct);
+        setUploadSent({ sent: 0, total: slideFile.size });
+        const controller = new AbortController();
+        abortRef.current = controller;
+        try {
+          await uploadSlideResumable(created.id, slideFile, {
+            signal: controller.signal,
+            onProgress: (pct, sent, total) => { setUploadPct(pct); setUploadSent({ sent, total }); },
+          });
+        } finally {
+          abortRef.current = null;
+        }
       }
+
+      // Only now is the patient fully submitted, so the id can be forgotten.
+      setPendingCaseId(null);
 
       setForm(EMPTY);                           // clear the form, ready for the next patient
       setImage(null);
@@ -161,6 +205,9 @@ function App() {
           : 'Case submitted — it now appears in the Pathology Viewer queue.',
       });
     } catch (err) {
+      // Cancelling is something the user chose, not a failure. handleCancelUpload
+      // has already shown its own message, so say nothing further here.
+      if (err instanceof UploadCancelled) return;
       // Show the server's message; if the session expired, drop back to login.
       // `catch` gives `unknown` under strict mode, so narrow before reading it.
       const msg = err instanceof Error
@@ -171,7 +218,45 @@ function App() {
     } finally {
       setBusy(false);                           // re-enable the button, whether it worked or not
       setUploadPct(null);
+      setUploadSent(null);
     }
+  };
+
+  /**
+   * Stop an upload in progress and throw away what the server has of it.
+   *
+   * Two things have to happen and they are easy to conflate. Aborting the
+   * request stops this browser sending; it does NOT remove the bytes already
+   * written on the server, because resuming later is normally exactly what you
+   * want. Discarding them is a separate, deliberate call — which is what makes
+   * this "I picked the wrong file" rather than "pause".
+   *
+   * The patient record stays. Only the slide is undone, so the correct file can
+   * be attached on the next submit without re-typing anything.
+   */
+  const handleCancelUpload = async () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+
+    if (pendingCaseId != null) {
+      try {
+        await cancelSlideUpload(pendingCaseId);
+      } catch {
+        // Best effort. If the discard didn't land, the partial file is swept
+        // automatically once it has been idle for a day.
+      }
+    }
+
+    setUploadPct(null);
+    setUploadSent(null);
+    setSlideFile(null);
+    setBusy(false);
+    setToast({
+      type: 'success',
+      text: pendingCaseId != null
+        ? 'Upload cancelled. The patient is saved — choose the correct slide and submit again.'
+        : 'Upload cancelled.',
+    });
   };
 
   // --- What gets drawn on screen ---
@@ -238,6 +323,7 @@ function App() {
           </div>
           <div className="lg:col-span-3">
             <FileUpload image={image} slideFile={slideFile} uploadPct={uploadPct}
+              uploadSent={uploadSent} onCancelUpload={handleCancelUpload}
               onFile={handleFile} onSubmit={handleSubmit} busy={busy} />
           </div>
         </div>

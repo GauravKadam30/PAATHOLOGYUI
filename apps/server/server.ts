@@ -55,6 +55,7 @@ import { isMailConfigured, verifyMailer } from './mailer.ts';
 import { authRoutes } from './routes/auth.ts';
 import { caseRoutes } from './routes/cases.ts';
 import { slideRoutes, tileRoutes } from './routes/slides.ts';
+import { sweepAbandonedParts } from './lib/chunked-upload.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -123,6 +124,27 @@ async function runBackup(reason: string): Promise<void> {
 }
 void runBackup('startup');
 setInterval(() => void runBackup('scheduled'), BACKUP_INTERVAL_MS).unref();
+
+// ===== Abandoned resumable uploads ==========================================
+// A resumable upload accumulates bytes in `slide.part` until the client says it
+// is finished. When a client never comes back — the attendant closed the tab,
+// or picked the wrong file and walked away — those bytes would otherwise sit
+// there forever, and they are gigabyte-scale files sharing a disk with the
+// slides that matter.
+//
+// Keyed on mtime, so an upload still receiving chunks is never swept no matter
+// how long it has been running: a CHC on a slow line may legitimately take all
+// night, and deleting live work would be far worse than keeping dead bytes.
+async function sweepUploads(reason: string): Promise<void> {
+  try {
+    const n = await sweepAbandonedParts();
+    if (n) console.log(`[uploads] ${reason}: removed ${n} abandoned partial upload(s)`);
+  } catch (e) {
+    console.error(`[uploads] sweep failed: ${(e as Error).message}`);
+  }
+}
+void sweepUploads('startup');
+setInterval(() => void sweepUploads('scheduled'), BACKUP_INTERVAL_MS).unref();
 
 // Manual trigger, so a backup can be taken before anything risky.
 app.post('/api/admin/backup', authRequired, async (_req, res) => {

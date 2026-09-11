@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
-import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2, CheckCircle2, Layers } from 'lucide-react'; // icons
+import { Microscope, UploadCloud, Image as ImageIcon, Send, Loader2, CheckCircle2, Layers, X } from 'lucide-react'; // icons
 import type { FileInfo } from './types';
 
 // Turn a byte count into a short, friendly size like "820 KB", "2.4 MB" or "1.2 GB".
@@ -22,18 +22,26 @@ const formatSize = (bytes: number): string => {
  * Like the form, this card doesn't keep its own data; App.jsx does. It receives:
  *   image     — the chosen photo (as text), or null
  *   slideFile — the chosen scanner slide (raw File), or null
- *   uploadPct — 0-100 while a slide is uploading, else null
- *   onFile    — function to call when the user picks a file
- *   onSubmit  — function to call when the Submit button is pressed
- *   busy      — true while submitting (used to disable the button)
+ *   uploadPct  — 0-100 while a slide is uploading, else null
+ *   uploadSent — bytes the server has confirmed, for the size readout
+ *   onCancelUpload — abandon an upload in progress (wrong file picked)
+ *   onFile     — function to call when the user picks a file
+ *   onSubmit   — function to call when the Submit button is pressed
+ *   busy       — true while submitting (used to disable the button)
  */
-export default function FileUpload({ image, slideFile, uploadPct, onFile, onSubmit, busy }: {
+export default function FileUpload({
+  image, slideFile, uploadPct, uploadSent, onCancelUpload, onFile, onSubmit, busy,
+}: {
   /** A shrunk photo as a data-URL, or null. */
   image: string | null;
   /** A scanner slide kept as a raw File — too big to preview or inline. */
   slideFile: File | null;
   /** 0-100 while a slide uploads, else null. */
   uploadPct: number | null;
+  /** Bytes the server has acknowledged, and the file's total. */
+  uploadSent: { sent: number; total: number } | null;
+  /** Abandon the upload in progress and discard what the server holds. */
+  onCancelUpload: () => void;
   onFile: (file: File | undefined | null) => void;
   onSubmit: () => void;
   busy: boolean;
@@ -182,6 +190,13 @@ export default function FileUpload({ image, slideFile, uploadPct, onFile, onSubm
       {/* Upload progress — only while a (large) scanner slide is transferring.
           A gigabyte-scale file takes minutes, so a plain spinner would look
           like the app had frozen. */}
+      {/* Upload progress. The percentage is bytes the SERVER has confirmed, not
+          bytes handed to the network, so it never races ahead and then jumps
+          backwards when a piece has to be retried.
+
+          Cancel sits here rather than beside Submit because it belongs to the
+          transfer, not the form: it is reachable the moment an upload starts —
+          which is exactly when someone realises they chose the wrong file. */}
       {uploadPct !== null && (
         <div className="mt-4">
           <div className="flex items-center justify-between mb-1.5">
@@ -190,6 +205,21 @@ export default function FileUpload({ image, slideFile, uploadPct, onFile, onSubm
           </div>
           <div className="w-full h-2 rounded-full bg-gray-100 overflow-hidden">
             <div className="h-full bg-indigo-600 transition-all duration-200" style={{ width: `${uploadPct}%` }} />
+          </div>
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <span className="mono text-[10px] text-slate-400">
+              {uploadSent
+                ? `${formatSize(uploadSent.sent)} of ${formatSize(uploadSent.total)} saved`
+                : 'starting…'}
+            </span>
+            <button
+              type="button"
+              onClick={onCancelUpload}
+              title="Stop this upload and discard it — the patient stays saved"
+              className="inline-flex items-center gap-1 px-2 py-1 -my-1 rounded-lg text-[11px] font-semibold text-slate-500 hover:text-red-600 hover:bg-red-50 active:scale-95 transition-all"
+            >
+              <X className="w-3 h-3" /> Cancel upload
+            </button>
           </div>
         </div>
       )}

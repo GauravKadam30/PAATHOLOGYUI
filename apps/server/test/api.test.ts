@@ -21,6 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import nodeCrypto from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(__dirname, '..', 'server.ts');
@@ -497,4 +498,180 @@ test('a wrong reset code does not change the password', async () => {
   // The original password must still work.
   const login = await api('/api/auth/login', { method: 'POST', body: { email, password: 'secret123', role: 'lab_attendant' } });
   assert.equal(login.status, 200);
+});
+
+/* ===========================================================================
+ * Resumable slide upload
+ * ---------------------------------------------------------------------------
+ * These are the paths where a bug is expensive and invisible: a file that ends
+ * up the right LENGTH but the wrong CONTENT would be a corrupt slide nobody
+ * notices until a pathologist is looking at it.
+ *
+ * The uploads directory here is the suite's throwaway one, and the bytes are
+ * not a real scanner file, so `complete` legitimately fails its OpenSlide check
+ * — which is itself worth asserting, since it proves an unreadable upload is
+ * never marked ready.
+ */
+
+/** Send one chunk. Separate from `api` because the body is binary, not JSON. */
+async function putChunk(
+  caseId: number | string,
+  offset: number,
+  body: Buffer,
+  token: string,
+  checksum?: string,
+): Promise<{ status: number; body: any }> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/octet-stream',
+    'Upload-Offset': String(offset),
+    Authorization: `Bearer ${token}`,
+  };
+  if (checksum !== undefined) headers['Upload-Checksum'] = checksum;
+  const res = await fetch(`${BASE}/api/cases/${caseId}/slide/upload`, { method: 'PATCH', headers, body });
+  let json: any = null;
+  try { json = await res.json(); } catch { /* some responses have no body */ }
+  return { status: res.status, body: json };
+}
+
+const sha256 = (b: Buffer) => nodeCrypto.createHash('sha256').update(b).digest('hex');
+const bytesOf = (n: number, fill: number) => Buffer.alloc(n, fill);
+
+/** A case owned by a fresh attendant, ready to receive a slide. */
+async function caseForUpload(): Promise<{ token: string; id: number }> {
+  const token = await makeAttendant();
+  const { body } = await api('/api/cases', { method: 'POST', token, body: { patient: 'Slide Subject' } });
+  return { token, id: body.id };
+}
+
+test('chunks accumulate and the server reports how much it holds', async () => {
+  const { token, id } = await caseForUpload();
+
+  const start = await api(`/api/cases/${id}/slide/upload?name=slide.tiff`, { token });
+  assert.equal(start.status, 200);
+  assert.equal(start.body.bytes, 0, 'a fresh case holds nothing');
+
+  const a = bytesOf(1024, 0x41);
+  const b = bytesOf(2048, 0x42);
+  assert.equal((await putChunk(id, 0, a, token, sha256(a))).body.bytes, 1024);
+  assert.equal((await putChunk(id, 1024, b, token, sha256(b))).body.bytes, 3072);
+
+  const after = await api(`/api/cases/${id}/slide/upload`, { token });
+  assert.equal(after.body.bytes, 3072, 'the offset survives between requests');
+});
+
+test('a chunk at the wrong offset is refused, and the reply says where the server really is', async () => {
+  const { token, id } = await caseForUpload();
+  const a = bytesOf(1024, 0x41);
+  await putChunk(id, 0, a, token, sha256(a));
+
+  // Ahead: a piece went missing, and appending would leave a hole.
+  const ahead = await putChunk(id, 9999, bytesOf(512, 0x43), token);
+  assert.equal(ahead.status, 409);
+  assert.equal(ahead.body.bytes, 1024, 'the error carries the true offset so the client can re-sync');
+
+  // Behind: the chunk landed but its reply was lost, so the client resent it.
+  const behind = await putChunk(id, 0, a, token, sha256(a));
+  assert.equal(behind.status, 409);
+  assert.equal(behind.body.bytes, 1024, 'a duplicate must not be appended twice');
+});
+
+test('an interrupted upload resumes from where it stopped, not from zero', async () => {
+  const { token, id } = await caseForUpload();
+  const first = bytesOf(4096, 0x41);
+  await putChunk(id, 0, first, token, sha256(first));
+
+  // Stand in for a dropped connection and a fresh page load: the client knows
+  // nothing, and asks.
+  const resume = await api(`/api/cases/${id}/slide/upload`, { token });
+  assert.equal(resume.body.bytes, 4096, 'the bytes already sent are still there');
+
+  const rest = bytesOf(1024, 0x42);
+  assert.equal((await putChunk(id, 4096, rest, token, sha256(rest))).body.bytes, 5120);
+});
+
+test('a corrupted chunk is rejected before it is written', async () => {
+  const { token, id } = await caseForUpload();
+  const good = bytesOf(1024, 0x41);
+  await putChunk(id, 0, good, token, sha256(good));
+
+  const bad = await putChunk(id, 1024, bytesOf(1024, 0x42), token, sha256(bytesOf(1024, 0x99)));
+  assert.equal(bad.status, 400);
+  assert.match(bad.body.error, /checksum/i);
+
+  const after = await api(`/api/cases/${id}/slide/upload`, { token });
+  assert.equal(after.body.bytes, 1024, 'the bad chunk must not have been appended');
+});
+
+test('finishing with the wrong byte count is refused and the partial discarded', async () => {
+  const { token, id } = await caseForUpload();
+  const part = bytesOf(2048, 0x41);
+  await putChunk(id, 0, part, token, sha256(part));
+
+  // The size the client claims is the only way to catch an upload that stopped
+  // cleanly on a chunk boundary — every individual piece was intact.
+  const done = await api(`/api/cases/${id}/slide/upload/complete`, {
+    method: 'POST', token, body: { size: 999999, name: 'slide.tiff' },
+  });
+  assert.equal(done.status, 400);
+
+  const after = await api(`/api/cases/${id}/slide/upload`, { token });
+  assert.equal(after.body.bytes, 0, 'bytes we cannot trust are thrown away, not left to confuse');
+});
+
+test('a file OpenSlide cannot read is never marked ready', async () => {
+  const { token, id } = await caseForUpload();
+  const fake = bytesOf(4096, 0x41);          // named .tiff, but not a slide
+  await putChunk(id, 0, fake, token, sha256(fake));
+
+  const done = await api(`/api/cases/${id}/slide/upload/complete`, {
+    method: 'POST', token, body: { size: 4096, name: 'slide.tiff' },
+  });
+  assert.equal(done.status, 422, 'the size was right, but the content is not a slide');
+
+  const meta = await api(`/api/cases/${id}`, { token });
+  assert.notEqual(meta.body.slideStatus, 'ready');
+});
+
+test('cancelling discards the bytes and clears the slide, but keeps the patient', async () => {
+  const { token, id } = await caseForUpload();
+  const part = bytesOf(4096, 0x41);
+  await putChunk(id, 0, part, token, sha256(part));
+
+  const cancelled = await api(`/api/cases/${id}/slide`, { method: 'DELETE', token });
+  assert.equal(cancelled.status, 200);
+
+  const after = await api(`/api/cases/${id}/slide/upload`, { token });
+  assert.equal(after.body.bytes, 0, 'the partial upload is gone');
+
+  // The case itself must survive: the CHC Patient ID is unique per centre, so
+  // deleting it would stop the same patient being submitted again.
+  const meta = await api(`/api/cases/${id}`, { token });
+  assert.equal(meta.status, 200);
+  assert.equal(meta.body.patient, 'Slide Subject');
+  assert.ok(!meta.body.slideStatus, 'the slide fields are cleared, ready for the correct file');
+});
+
+test('only a lab attendant can upload a slide', async () => {
+  const { token, id } = await caseForUpload();
+  const pathToken = await makePathologist();
+
+  assert.equal((await api(`/api/cases/${id}/slide/upload`, { token: pathToken })).status, 403);
+  assert.equal((await putChunk(id, 0, bytesOf(16, 0x41), pathToken)).status, 403);
+  assert.equal((await api(`/api/cases/${id}/slide`, { method: 'DELETE', token: pathToken })).status, 403);
+
+  const still = await api(`/api/cases/${id}/slide/upload`, { token });
+  assert.equal(still.body.bytes, 0);
+});
+
+test('an unsupported format is refused before any bytes are sent', async () => {
+  const { token, id } = await caseForUpload();
+  const res = await api(`/api/cases/${id}/slide/upload?name=holiday.png`, { token });
+  assert.equal(res.status, 400, 'told up front, not after twenty minutes of uploading');
+  assert.match(res.body.error, /Unsupported slide format/);
+});
+
+test('uploading to a case that does not exist is refused', async () => {
+  const token = await makeAttendant();
+  assert.equal((await api('/api/cases/999999/slide/upload', { token })).status, 404);
+  assert.equal((await putChunk(999999, 0, bytesOf(16, 0x41), token)).status, 404);
 });

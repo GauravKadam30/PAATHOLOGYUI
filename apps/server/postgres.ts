@@ -380,6 +380,21 @@ export async function setSlideFailed(id: number | string, message: string): Prom
 }
 
 /**
+ * Forget a case's slide entirely, putting the fields back to how they were
+ * before anything was uploaded.
+ *
+ * Used by cancel. The case ROW is deliberately kept: the patient details are
+ * still wanted, it is only the file being undone, and leaving the row means the
+ * correct slide can be uploaded straight away without re-entering anything.
+ */
+export async function clearSlide(id: number | string): Promise<void> {
+  await db.update(cases).set({
+    slidePath: null, dziPath: null, slideStatus: null, slideError: null,
+    updatedAt: new Date().toISOString(),
+  }).where(eq(cases.id, Number(id)));
+}
+
+/**
  * On startup, any case left mid-conversion belongs to a server that died.
  * Nothing is generating tiles for it any more, so mark it failed rather than
  * leaving it spinning forever.
