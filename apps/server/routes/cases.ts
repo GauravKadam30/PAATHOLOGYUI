@@ -178,9 +178,12 @@ caseRoutes.delete('/cases/:id/sign', authRequired, async (req, res) => {
   const isSigner = existing.reportedById != null
     ? existing.reportedById === req.user!.id
     : existing.reportedBy === req.user!.full_name;
+  // Deliberately does not name the signer. This refusal matters most when two
+  // physicians share a name, and naming the signer then tells the refused
+  // physician that only someone with THEIR OWN name may do it.
   if (!isSigner) {
     return res.status(403).json({
-      error: `Only ${existing.reportedBy ?? 'the physician who signed it'} can withdraw this signature.`,
+      error: 'Only the physician who signed this report can withdraw it.',
     });
   }
 

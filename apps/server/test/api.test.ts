@@ -455,6 +455,8 @@ test('a physician cannot withdraw a signature made by a different physician with
   await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: signer });
   const refused = await api(`/api/cases/${c.id}/sign`, { method: 'DELETE', token: namesake });
   assert.equal(refused.status, 403, 'a shared name must not be enough to undo a sign-off');
+  assert.match(refused.body.error, /physician who signed/,
+    'the refusal must not name the signer; with a shared name it would name the person refused');
 
   const still = await api(`/api/cases/${c.id}`, { token: signer });
   assert.ok(still.body.reportedAt, 'and the report is still signed');
