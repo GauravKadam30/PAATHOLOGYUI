@@ -380,6 +380,18 @@ export async function setSlideFailed(id: number | string, message: string): Prom
 }
 
 /**
+ * Every case id in the database, archived ones included.
+ *
+ * Used to find upload directories whose case no longer exists. Archived cases
+ * MUST be in this list: they are hidden from the worklist but still very much
+ * real, and sweeping their slides away would quietly destroy restorable data.
+ */
+export async function allCaseIds(): Promise<number[]> {
+  const rows = await db.select({ id: cases.id }).from(cases);
+  return rows.map((r) => Number(r.id));
+}
+
+/**
  * Permanently remove a case and everything hanging off it.
  *
  * The notes and annotations go with it through ON DELETE CASCADE, so this is a

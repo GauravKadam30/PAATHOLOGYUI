@@ -55,7 +55,7 @@ import { isMailConfigured, verifyMailer } from './mailer.ts';
 import { authRoutes } from './routes/auth.ts';
 import { caseRoutes } from './routes/cases.ts';
 import { slideRoutes, tileRoutes } from './routes/slides.ts';
-import { sweepAbandonedParts } from './lib/chunked-upload.ts';
+import { sweepAbandonedParts, listStoredCases, caseDiskUsage, discardUpload } from './lib/chunked-upload.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -145,6 +145,46 @@ async function sweepUploads(reason: string): Promise<void> {
 }
 void sweepUploads('startup');
 setInterval(() => void sweepUploads('scheduled'), BACKUP_INTERVAL_MS).unref();
+
+// ===== Slide files whose case no longer exists ==============================
+// Deleting through the API removes the files with the row. Removing a row any
+// OTHER way does not — a DELETE run in psql during cleanup, or a restore of an
+// older database — and the slide then sits on disk forever with nothing
+// pointing at it. At roughly a gigabyte each these are the largest thing that
+// can be silently wasted.
+//
+// Archived cases are deliberately NOT orphans. They are hidden from the
+// worklist but fully restorable, and sweeping their slides would turn a
+// reversible action into a destructive one.
+async function sweepOrphanSlides(reason: string): Promise<void> {
+  try {
+    const stored = await listStoredCases();
+    if (!stored.length) return;
+
+    // If this throws, the sweep is abandoned rather than guessed at: an empty
+    // list from a failed query would otherwise look like "no cases exist" and
+    // delete every slide on the disk.
+    const live = new Set((await db.allCaseIds()).map(String));
+
+    let removed = 0;
+    let freed = 0;
+    for (const id of stored) {
+      if (live.has(id)) continue;
+      freed += await caseDiskUsage(id);
+      await discardUpload(id);
+      removed++;
+      console.log(`[uploads] removed orphaned slide directory for case ${id}`);
+    }
+    if (removed) {
+      console.log(`[uploads] ${reason}: ${removed} orphaned case director${removed === 1 ? 'y' : 'ies'} removed, `
+        + `${(freed / 1e6).toFixed(1)} MB reclaimed`);
+    }
+  } catch (e) {
+    console.error(`[uploads] orphan sweep failed: ${(e as Error).message}`);
+  }
+}
+void sweepOrphanSlides('startup');
+setInterval(() => void sweepOrphanSlides('scheduled'), BACKUP_INTERVAL_MS).unref();
 
 // Manual trigger, so a backup can be taken before anything risky.
 app.post('/api/admin/backup', authRequired, async (_req, res) => {

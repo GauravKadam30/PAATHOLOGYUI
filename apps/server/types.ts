@@ -237,6 +237,8 @@ export interface DataDriver {
   setCaseArchived(id: number | string, archived?: boolean): Promise<CaseMeta | null>;
   /** Permanently remove a case; cascades to its notes and annotations. */
   deleteCase(id: number | string): Promise<{ notes: number; annotations: number } | null>;
+  /** Every case id, archived included — for finding orphaned slide files. */
+  allCaseIds(): Promise<number[]>;
 
   // Slide lifecycle
   setSlidePending(id: number | string, slidePath: string | null): Promise<void>;

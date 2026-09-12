@@ -716,6 +716,23 @@ test('deleting a patient erases the record, its notes and its slide from disk', 
   assert.equal(list.body.some((c: any) => c.id === id), false, 'and it is out of the worklist');
 });
 
+test('archiving KEEPS the slide on disk — unlike deleting, it is reversible', async () => {
+  const { token, id } = await caseForUpload();
+  const bytes = bytesOf(2048, 0x41);
+  await startUpload(id, token, { size: 2048 });
+  await putChunk(id, 0, bytes, token, sha256(bytes));
+
+  const dir = path.join(tmpDir, 'uploads', String(id));
+  assert.ok(fs.existsSync(dir), 'files exist before archiving');
+
+  await api(`/api/cases/${id}/archived`, { method: 'PATCH', token, body: { archived: true } });
+  assert.ok(fs.existsSync(dir), 'an archived case must keep its files, or restoring it is a lie');
+
+  const back = await api(`/api/cases/${id}/archived`, { method: 'PATCH', token, body: { archived: false } });
+  assert.equal(back.status, 200);
+  assert.ok(fs.existsSync(dir), 'and they are still there after restoring');
+});
+
 test('the audit trail survives a deletion — that is the point of it', async () => {
   const { token, id } = await caseForUpload();
   const pathToken = await makePathologist();

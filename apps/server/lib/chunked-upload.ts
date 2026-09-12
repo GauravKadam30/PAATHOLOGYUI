@@ -378,6 +378,21 @@ export function discardUpload(caseId: string | number): Promise<void> {
 }
 
 /**
+ * The case ids that currently have a directory under UPLOADS_DIR.
+ *
+ * Only numeric names are returned, because only those were created by this
+ * server. Anything else a human has put there is left alone.
+ */
+export async function listStoredCases(): Promise<string[]> {
+  try {
+    const entries = await fsp.readdir(UPLOADS_DIR, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory() && /^[0-9]+$/.test(e.name)).map((e) => e.name);
+  } catch {
+    return [];   // uploads dir not created yet
+  }
+}
+
+/**
  * Delete `.part` files nothing has written to in a long time.
  *
  * Without this, every abandoned upload keeps its bytes forever — and these are
