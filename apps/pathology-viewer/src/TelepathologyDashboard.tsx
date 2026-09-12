@@ -1031,7 +1031,18 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
               on top of the footer. The floor guarantees every card at least
               enough room for its tallest content, `1fr` still stretches them
               equally when the window is tall, and `overflow-y-auto` lets the
-              area scroll on short screens instead of spilling. */}
+              area scroll on short screens instead of spilling.
+
+              THE FIRST ROW'S FLOOR IS HIGHER: 30rem. Patient Information now
+              carries the CHC consultant and OPD notes beneath its facts, and at
+              20rem the six fact cells alone already filled the whole card — the
+              notes would have been left about 30px, or spilled out of the card.
+              30rem is the facts at natural height, an 11rem CHC block, and the
+              card's own padding and header. An 8rem block was tried first and
+              measured at 1440x900 it left the prescription 47px tall — two
+              lines — which is too little to read; 11rem gives about four. Only that row is raised: Clinical
+              Notes beside it just gets a taller textarea, and the bottom row
+              keeps its 20rem. */}
           {/* `lg:auto-rows-fr` only forces equal row heights once we're
               actually in the 2-column layout (2 cards per row, sensible to
               match). Left on for the single-column mobile layout, it would
@@ -1059,10 +1070,14 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
               </div>
             </section>
 
-            <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-1 lg:grid-cols-2 lg:auto-rows-[minmax(20rem,1fr)] gap-5">
-            {/* 1. NIKSAY Patient Information — read-only facts shown as a 2-col grid */}
+            <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-[minmax(30rem,1fr)_minmax(20rem,1fr)] lg:auto-rows-[minmax(20rem,1fr)] gap-5">
+            {/* 1. NIKSAY Patient Information — read-only facts, then what the CHC
+                wrote about the visit. */}
             <SectionCard icon={ClipboardList} title="1. NIKSAY Patient Information">
-              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-gray-100 rounded-xl overflow-hidden border border-gray-100 flex-1 auto-rows-fr">
+              {/* `shrink-0`, no longer `flex-1`: the facts keep their natural
+                  height and any spare room in the card goes to the CHC notes
+                  below, which is the part that actually benefits from it. */}
+              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-px bg-gray-100 rounded-xl overflow-hidden border border-gray-100 shrink-0 auto-rows-fr">
                 {/* Typed as a tuple array so `k` is known to be a string and
                     can be used as a React key — an untyped array literal
                     widens every element to `string | boolean`. */}
@@ -1079,6 +1094,41 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
                     <dd className={`${mono ? 'mono ' : ''}text-sm font-semibold mt-0.5 ${k === 'Status' ? 'text-amber-700' : 'text-slate-900'}`}>{v}</dd>
                   </div>
                 ))}
+              </dl>
+
+              {/* From the CHC portal: who the patient saw, and what was
+                  prescribed at the OPD. Uses the exact cell styling of the facts
+                  above, so it reads as the same record continuing rather than a
+                  panel bolted on.
+
+                  The notes scroll INSIDE this block and never grow the card —
+                  that is what keeps it level with Clinical Notes beside it. It is
+                  bounded two different ways because the layout differs:
+                    lg and up  the grid row fixes the card height; this block
+                               fills what the facts leave and scrolls within it
+                    below lg   cards size to their content, so without `max-h` a
+                               long prescription would stretch the card and
+                               never scroll at all */}
+              <dl className="mt-3 flex-1 min-h-[11rem] max-h-[16rem] lg:max-h-none flex flex-col gap-px bg-gray-100 rounded-xl overflow-hidden border border-gray-100">
+                <div className="bg-neutral-50 px-4 py-2.5 flex items-baseline gap-3 shrink-0">
+                  <dt className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide shrink-0">Consultant Name</dt>
+                  <dd
+                    title={currentCase.consultant || undefined}
+                    className={`min-w-0 truncate text-sm ${currentCase.consultant ? 'font-semibold text-slate-900' : 'font-medium text-slate-400'}`}
+                  >
+                    {currentCase.consultant || 'Not recorded'}
+                  </dd>
+                </div>
+                <div className="bg-neutral-50 px-4 pt-2.5 pb-3 flex-1 min-h-0 flex flex-col">
+                  <dt className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide shrink-0">OPD Prescription &amp; Notes</dt>
+                  {/* pre-wrap keeps the line breaks the attendant typed —
+                      prescriptions are usually one drug per line.
+                      overscroll-contain stops reaching the end of the notes
+                      from scrolling the whole page along with it. */}
+                  <dd className={`mt-1.5 flex-1 min-h-0 overflow-y-auto overscroll-contain pr-1 text-sm leading-relaxed whitespace-pre-wrap break-words [scrollbar-width:thin] ${currentCase.notes ? 'text-slate-700' : 'text-slate-400'}`}>
+                    {currentCase.notes || 'No prescription or notes were entered at the CHC.'}
+                  </dd>
+                </div>
               </dl>
             </SectionCard>
 
