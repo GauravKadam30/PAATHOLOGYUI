@@ -84,6 +84,20 @@ export class SizeMismatch extends Error {
 export class UnsupportedFormat extends Error {
   constructor() { super('Unsupported slide format. Expected .tiff, .svs, .ndpi or similar.'); }
 }
+/**
+ * The partial upload held for this case belongs to a DIFFERENT file, so it has
+ * been discarded and the client must start from zero.
+ *
+ * See the note on `beginUpload` for why this matters: without it, resuming
+ * would splice two different files together into something of exactly the
+ * expected length and entirely unreadable.
+ */
+export class UploadReplaced extends Error {
+  readonly bytes = 0;
+  constructor() {
+    super('A partial upload of a different file was held for this case and has been discarded. Starting again from the beginning.');
+  }
+}
 
 /**
  * The directory for one case's slide.
@@ -109,6 +123,84 @@ export async function partSize(caseId: string | number): Promise<number> {
   } catch {
     return 0;   // no part file yet — a fresh upload
   }
+}
+
+/* --- Whose bytes are these? -------------------------------------------------
+ * A `.part` on its own records only HOW MANY bytes a case holds, never WHICH
+ * FILE they came from — and that gap is enough to corrupt a slide silently.
+ *
+ * Upload file A, get 50 MB in, and stop without cancelling (an error, a closed
+ * tab). Later upload file B to the same case. The client asks for the offset,
+ * the server truthfully answers 50 MB, and the client sends B FROM BYTE 50 MB
+ * ONWARDS. The result is A's first 50 MB followed by B's remainder — and it is
+ * exactly B's declared length, so the size check at completion passes. A file
+ * of the right size, made of two different files, which no reader can open.
+ *
+ * So the identity of the file is recorded next to its bytes. The client derives
+ * an id from the name, the byte length and a hash of the head of the file, and
+ * every request carries it. A mismatch means these bytes are somebody else's:
+ * they are thrown away and the upload restarts, which costs the transfer but
+ * can never produce a corrupt slide.
+ */
+interface PartMeta {
+  uploadId: string;
+  name: string;
+  size: number;
+  startedAt: string;
+}
+
+const META_NAME = 'slide.part.json';
+
+function metaPath(caseId: string | number): string {
+  return path.join(caseDir(caseId), META_NAME);
+}
+
+async function readMeta(caseId: string | number): Promise<PartMeta | null> {
+  try {
+    return JSON.parse(await fsp.readFile(metaPath(caseId), 'utf8')) as PartMeta;
+  } catch {
+    return null;   // absent, or unreadable — treated the same, see below
+  }
+}
+
+async function writeMeta(caseId: string | number, meta: PartMeta): Promise<void> {
+  await fsp.mkdir(caseDir(caseId), { recursive: true });
+  await fsp.writeFile(metaPath(caseId), JSON.stringify(meta));
+}
+
+/** Drop the partial upload and its metadata, leaving any finished slide alone. */
+async function dropPart(caseId: string | number): Promise<void> {
+  await fsp.rm(partPath(caseId), { force: true });
+  await fsp.rm(metaPath(caseId), { force: true });
+}
+
+/**
+ * Reconcile what the server holds against the file the client is about to send,
+ * and report where to continue from.
+ *
+ * Returns the resumable byte count when the stored partial belongs to this same
+ * file, and 0 otherwise — having first thrown the other file's bytes away.
+ *
+ * A `.part` with NO metadata is treated as a stranger's. That covers uploads
+ * begun before this identity check existed, which are exactly the ones that
+ * could splice.
+ */
+export function beginUpload(
+  caseId: string | number,
+  uploadId: string,
+  name: string,
+  size: number,
+): Promise<number> {
+  return withCaseLock(caseId, async () => {
+    const held = await partSize(caseId);
+    if (held > 0) {
+      const meta = await readMeta(caseId);
+      if (meta && meta.uploadId === uploadId) return held;   // same file: resume
+      await dropPart(caseId);                                // different file: void
+    }
+    await writeMeta(caseId, { uploadId, name, size, startedAt: new Date().toISOString() });
+    return 0;
+  });
 }
 
 /* --- One writer at a time, per case -----------------------------------------
@@ -153,13 +245,40 @@ function withCaseLock<T>(caseId: string | number, fn: () => Promise<T>): Promise
  */
 export function appendChunk(
   caseId: string | number,
+  uploadId: string,
   offset: number,
   chunk: Buffer,
   sha256?: string,
 ): Promise<number> {
   return withCaseLock(caseId, async () => {
     await fsp.mkdir(caseDir(caseId), { recursive: true });
+
+    // Checked on EVERY chunk, not just when the upload starts. Testing this
+    // found the gap: once a second file had taken the case over, the partial was
+    // back to zero bytes, so a size-based guard let the FIRST file's client keep
+    // writing — into the second file's slot.
+    //
+    // So the claim decides, not the byte count.
+    const meta = await readMeta(caseId);
     const current = await partSize(caseId);
+
+    if (meta) {
+      // Claimed. Only the owner may extend it — and note this does NOT discard,
+      // because the bytes belong to whoever claimed them. A stray request from
+      // some other upload must not be able to destroy their progress. Taking a
+      // case over is a deliberate act, and it happens in beginUpload().
+      if (meta.uploadId !== uploadId) throw new UploadReplaced();
+    } else if (current > 0) {
+      // Bytes with no recorded owner: written before this check existed, or the
+      // metadata was lost. They cannot be shown to belong to this upload, so
+      // they go rather than risk splicing two files together.
+      await dropPart(caseId);
+      throw new UploadReplaced();
+    } else {
+      // Nothing here at all — this upload claims the case.
+      await writeMeta(caseId, { uploadId, name: '', size: 0, startedAt: new Date().toISOString() });
+    }
+
     if (offset !== current) throw new OffsetMismatch(current);
 
     if (current + chunk.length > MAX_SLIDE_BYTES) {
@@ -189,11 +308,21 @@ export function appendChunk(
  */
 export function finalizePart(
   caseId: string | number,
+  uploadId: string,
   originalName: string,
   expectedSize: number,
 ): Promise<{ path: string; size: number }> {
   return withCaseLock(caseId, async () => {
     if (!isSlideFile(originalName)) throw new UnsupportedFormat();
+
+    // The bytes must belong to the file being finished. Without this a client
+    // could complete an upload over another file's partial that happened to
+    // reach the same length.
+    const meta = await readMeta(caseId);
+    if (!meta || meta.uploadId !== uploadId) {
+      await dropPart(caseId);
+      throw new UploadReplaced();
+    }
 
     const size = await partSize(caseId);
     if (size !== expectedSize) throw new SizeMismatch(size, expectedSize);
@@ -204,11 +333,14 @@ export function finalizePart(
     // extension it would still be there, and find_slide_file() in the tile
     // service takes the first file it sees.
     for (const name of await fsp.readdir(dir)) {
-      if (name !== PART_NAME) await fsp.rm(path.join(dir, name), { force: true, recursive: true });
+      if (name !== PART_NAME && name !== META_NAME) {
+        await fsp.rm(path.join(dir, name), { force: true, recursive: true });
+      }
     }
 
     const finalPath = path.join(dir, `slide${path.extname(originalName).toLowerCase()}`);
     await fsp.rename(partPath(caseId), finalPath);
+    await fsp.rm(metaPath(caseId), { force: true });   // the upload is over
     return { path: finalPath, size };
   });
 }
@@ -255,6 +387,7 @@ export async function sweepAbandonedParts(maxAgeMs = ABANDONED_AFTER_MS): Promis
       const st = await fsp.stat(p);
       if (st.mtimeMs >= cutoff) continue;
       await fsp.rm(p, { force: true });
+      await fsp.rm(path.join(UPLOADS_DIR, entry.name, META_NAME), { force: true });
       removed++;
     } catch {
       // No part file for this case, or it vanished between stat and rm.

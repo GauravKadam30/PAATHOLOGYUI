@@ -141,12 +141,34 @@ const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'
  * has none. The server treats the checksum as optional for exactly that reason
  * — the upload still works, it just loses this one extra guard.
  */
-async function sha256Hex(buf: ArrayBuffer): Promise<string | undefined> {
+async function sha256Hex(buf: BufferSource): Promise<string | undefined> {
   if (!globalThis.crypto?.subtle) return undefined;
   const digest = await globalThis.crypto.subtle.digest('SHA-256', buf);
   let out = '';
   for (const b of new Uint8Array(digest)) out += HEX[b];
   return out;
+}
+
+/**
+ * An id for THIS FILE, so the server can tell whether a partial upload it is
+ * holding belongs to it.
+ *
+ * Without this the server knows only how many bytes a case has, not whose. Stop
+ * uploading file A part-way without cancelling, then upload file B to the same
+ * case, and the client would be told to continue from A's offset — producing
+ * A's beginning joined to B's end, at exactly B's expected length, which passes
+ * every size check and opens in nothing.
+ *
+ * Name and length alone would very nearly do, but hashing the first megabyte as
+ * well costs one local read and removes the "same name, same size, different
+ * scan" case entirely. Where WebCrypto is unavailable (a non-secure context)
+ * the name and size still give a usable id — weaker, and far better than none.
+ */
+async function uploadFingerprint(file: File): Promise<string> {
+  const head = await file.slice(0, Math.min(1024 * 1024, file.size)).arrayBuffer();
+  const headHash = await sha256Hex(head);
+  const basis = `${file.name}:${file.size}:${headHash ?? 'nohash'}`;
+  return (await sha256Hex(new TextEncoder().encode(basis))) ?? basis;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -178,12 +200,20 @@ export async function uploadSlideResumable(
 
   stopIfCancelled();
 
-  // Ask where to start. On a fresh upload this is 0; after an interruption it
-  // is however far the server got — including from a previous browser session,
+  // Identifies the file, so the server can tell a resumable partial from some
+  // other upload's leftovers.
+  const uploadId = await uploadFingerprint(file);
+
+  // Ask where to start. On a fresh upload this is 0; after an interruption it is
+  // however far the server got — including from a previous browser session,
   // because the answer comes from the file on disk rather than anything the
-  // client remembered.
+  // client remembered. If the server was holding a DIFFERENT file's partial it
+  // discards it and answers 0.
   const start = await request<{ bytes: number; chunkSize: number }>(
-    `/api/cases/${caseId}/slide/upload?name=${encodeURIComponent(file.name)}`,
+    `/api/cases/${caseId}/slide/upload`
+    + `?name=${encodeURIComponent(file.name)}`
+    + `&size=${file.size}`
+    + `&uploadId=${encodeURIComponent(uploadId)}`,
   );
   let sent = Math.min(start.bytes, file.size);
   const chunkSize = start.chunkSize || 5 * 1024 * 1024;
@@ -208,6 +238,7 @@ export async function uploadSlideResumable(
         headers: {
           ...authHeaders(),
           'Content-Type': 'application/octet-stream',
+          'Upload-Id': uploadId,
           'Upload-Offset': String(sent),
           ...(checksum ? { 'Upload-Checksum': checksum } : {}),
         },
@@ -258,7 +289,7 @@ export async function uploadSlideResumable(
   // the case is marked ready.
   await request(`/api/cases/${caseId}/slide/upload/complete`, {
     method: 'POST',
-    body: JSON.stringify({ size: file.size, name: file.name }),
+    body: JSON.stringify({ size: file.size, name: file.name, uploadId }),
   });
 }
 

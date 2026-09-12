@@ -514,15 +514,30 @@ test('a wrong reset code does not change the password', async () => {
  */
 
 /** Send one chunk. Separate from `api` because the body is binary, not JSON. */
+const UPLOAD_ID = 'test-upload-id';
+
+/** Start or resume an upload, identifying WHICH file is being sent. */
+const startUpload = (
+  caseId: number | string,
+  token: string,
+  { name = 'slide.tiff', size = 0, uploadId = UPLOAD_ID } = {},
+): Promise<{ status: number; body: any }> => api(
+  `/api/cases/${caseId}/slide/upload`
+  + `?name=${encodeURIComponent(name)}&size=${size}&uploadId=${encodeURIComponent(uploadId)}`,
+  { token },
+);
+
 async function putChunk(
   caseId: number | string,
   offset: number,
   body: Buffer,
   token: string,
   checksum?: string,
+  uploadId: string = UPLOAD_ID,
 ): Promise<{ status: number; body: any }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/octet-stream',
+    'Upload-Id': uploadId,
     'Upload-Offset': String(offset),
     Authorization: `Bearer ${token}`,
   };
@@ -546,7 +561,7 @@ async function caseForUpload(): Promise<{ token: string; id: number }> {
 test('chunks accumulate and the server reports how much it holds', async () => {
   const { token, id } = await caseForUpload();
 
-  const start = await api(`/api/cases/${id}/slide/upload?name=slide.tiff`, { token });
+  const start = await startUpload(id, token);
   assert.equal(start.status, 200);
   assert.equal(start.body.bytes, 0, 'a fresh case holds nothing');
 
@@ -555,7 +570,7 @@ test('chunks accumulate and the server reports how much it holds', async () => {
   assert.equal((await putChunk(id, 0, a, token, sha256(a))).body.bytes, 1024);
   assert.equal((await putChunk(id, 1024, b, token, sha256(b))).body.bytes, 3072);
 
-  const after = await api(`/api/cases/${id}/slide/upload`, { token });
+  const after = await startUpload(id, token);
   assert.equal(after.body.bytes, 3072, 'the offset survives between requests');
 });
 
@@ -582,7 +597,7 @@ test('an interrupted upload resumes from where it stopped, not from zero', async
 
   // Stand in for a dropped connection and a fresh page load: the client knows
   // nothing, and asks.
-  const resume = await api(`/api/cases/${id}/slide/upload`, { token });
+  const resume = await startUpload(id, token);
   assert.equal(resume.body.bytes, 4096, 'the bytes already sent are still there');
 
   const rest = bytesOf(1024, 0x42);
@@ -598,7 +613,7 @@ test('a corrupted chunk is rejected before it is written', async () => {
   assert.equal(bad.status, 400);
   assert.match(bad.body.error, /checksum/i);
 
-  const after = await api(`/api/cases/${id}/slide/upload`, { token });
+  const after = await startUpload(id, token);
   assert.equal(after.body.bytes, 1024, 'the bad chunk must not have been appended');
 });
 
@@ -610,11 +625,11 @@ test('finishing with the wrong byte count is refused and the partial discarded',
   // The size the client claims is the only way to catch an upload that stopped
   // cleanly on a chunk boundary — every individual piece was intact.
   const done = await api(`/api/cases/${id}/slide/upload/complete`, {
-    method: 'POST', token, body: { size: 999999, name: 'slide.tiff' },
+    method: 'POST', token, body: { size: 999999, name: 'slide.tiff', uploadId: UPLOAD_ID },
   });
   assert.equal(done.status, 400);
 
-  const after = await api(`/api/cases/${id}/slide/upload`, { token });
+  const after = await startUpload(id, token);
   assert.equal(after.body.bytes, 0, 'bytes we cannot trust are thrown away, not left to confuse');
 });
 
@@ -624,7 +639,7 @@ test('a file OpenSlide cannot read is never marked ready', async () => {
   await putChunk(id, 0, fake, token, sha256(fake));
 
   const done = await api(`/api/cases/${id}/slide/upload/complete`, {
-    method: 'POST', token, body: { size: 4096, name: 'slide.tiff' },
+    method: 'POST', token, body: { size: 4096, name: 'slide.tiff', uploadId: UPLOAD_ID },
   });
   assert.equal(done.status, 422, 'the size was right, but the content is not a slide');
 
@@ -640,7 +655,7 @@ test('cancelling discards the bytes and clears the slide, but keeps the patient'
   const cancelled = await api(`/api/cases/${id}/slide`, { method: 'DELETE', token });
   assert.equal(cancelled.status, 200);
 
-  const after = await api(`/api/cases/${id}/slide/upload`, { token });
+  const after = await startUpload(id, token);
   assert.equal(after.body.bytes, 0, 'the partial upload is gone');
 
   // The case itself must survive: the CHC Patient ID is unique per centre, so
@@ -655,23 +670,64 @@ test('only a lab attendant can upload a slide', async () => {
   const { token, id } = await caseForUpload();
   const pathToken = await makePathologist();
 
-  assert.equal((await api(`/api/cases/${id}/slide/upload`, { token: pathToken })).status, 403);
+  assert.equal((await startUpload(id, pathToken)).status, 403);
   assert.equal((await putChunk(id, 0, bytesOf(16, 0x41), pathToken)).status, 403);
   assert.equal((await api(`/api/cases/${id}/slide`, { method: 'DELETE', token: pathToken })).status, 403);
 
-  const still = await api(`/api/cases/${id}/slide/upload`, { token });
+  const still = await startUpload(id, token);
   assert.equal(still.body.bytes, 0);
 });
 
 test('an unsupported format is refused before any bytes are sent', async () => {
   const { token, id } = await caseForUpload();
-  const res = await api(`/api/cases/${id}/slide/upload?name=holiday.png`, { token });
+  const res = await startUpload(id, token, { name: 'holiday.png' });
   assert.equal(res.status, 400, 'told up front, not after twenty minutes of uploading');
   assert.match(res.body.error, /Unsupported slide format/);
 });
 
+test('a partial upload of a DIFFERENT file is discarded, never spliced onto', async () => {
+  const { token, id } = await caseForUpload();
+
+  // File A stops half way WITHOUT being cancelled — a closed tab, or an error.
+  const a = bytesOf(2048, 0x41);
+  await startUpload(id, token, { uploadId: 'file-A', size: 4096 });
+  await putChunk(id, 0, a, token, sha256(a), 'file-A');
+  assert.equal(
+    (await startUpload(id, token, { uploadId: 'file-A', size: 4096 })).body.bytes, 2048,
+    'the same file must still resume',
+  );
+
+  // File B is now sent to the same case. Offering A's offset here would splice
+  // A's opening onto B's remainder — at exactly B's declared length, so every
+  // size check would pass and the result would open in nothing.
+  const begun = await startUpload(id, token, { uploadId: 'file-B', size: 3072 });
+  assert.equal(begun.body.bytes, 0, "a different file must start from zero, not A's offset");
+
+  // A stale client still holding A's id must not be able to append either.
+  const stale = await putChunk(id, 0, bytesOf(512, 0x41), token, undefined, 'file-A');
+  assert.equal(stale.status, 409, 'the other file is gone; the old client has to restart');
+
+  // And B must end up as B alone.
+  const b = bytesOf(3072, 0x42);
+  await startUpload(id, token, { uploadId: 'file-B', size: 3072 });
+  const wrote = await putChunk(id, 0, b, token, sha256(b), 'file-B');
+  assert.equal(wrote.body.bytes, 3072, 'B occupies the file by itself');
+});
+
+test('finishing with an id that does not own the bytes is refused', async () => {
+  const { token, id } = await caseForUpload();
+  const a = bytesOf(4096, 0x41);
+  await startUpload(id, token, { uploadId: 'owner', size: 4096 });
+  await putChunk(id, 0, a, token, sha256(a), 'owner');
+
+  const impostor = await api(`/api/cases/${id}/slide/upload/complete`, {
+    method: 'POST', token, body: { size: 4096, name: 'slide.tiff', uploadId: 'someone-else' },
+  });
+  assert.equal(impostor.status, 409);
+});
+
 test('uploading to a case that does not exist is refused', async () => {
   const token = await makeAttendant();
-  assert.equal((await api('/api/cases/999999/slide/upload', { token })).status, 404);
+  assert.equal((await startUpload(999999, token)).status, 404);
   assert.equal((await putChunk(999999, 0, bytesOf(16, 0x41), token)).status, 404);
 });

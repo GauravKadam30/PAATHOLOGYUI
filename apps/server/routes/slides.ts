@@ -17,8 +17,8 @@ import { uploadLimiter } from '../lib/rate-limit.ts';
 import { TILE_BASE, upload, isSlideFile } from '../lib/tiles.ts';
 import {
   MAX_CHUNK_BYTES, SUGGESTED_CHUNK_BYTES, MAX_SLIDE_BYTES,
-  partSize, appendChunk, finalizePart, discardUpload,
-  OffsetMismatch, ChecksumMismatch, SizeMismatch, UnsupportedFormat,
+  partSize, beginUpload, appendChunk, finalizePart, discardUpload,
+  OffsetMismatch, ChecksumMismatch, SizeMismatch, UnsupportedFormat, UploadReplaced,
 } from '../lib/chunked-upload.ts';
 
 /** Mounted at /slides — the path OpenSeadragon requests tiles from. */
@@ -158,8 +158,17 @@ slideRoutes.get('/cases/:id/slide/upload', authRequired, uploadLimiter, uploader
   if (name && !isSlideFile(name)) {
     return res.status(400).json({ error: 'Unsupported slide format. Expected .tiff, .svs, .ndpi or similar.' });
   }
+
+  // The id identifies the FILE, not the request. It is what stops a partial
+  // upload of one file being continued as another — see beginUpload().
+  const uploadId = typeof req.query.uploadId === 'string' ? req.query.uploadId : '';
+  if (!uploadId) {
+    return res.status(400).json({ error: 'uploadId is required to start or resume an upload.' });
+  }
+  const size = Number(req.query.size);
+
   res.json({
-    bytes: await partSize(String(req.params.id)),
+    bytes: await beginUpload(String(req.params.id), uploadId, name, Number.isFinite(size) ? size : 0),
     chunkSize: SUGGESTED_CHUNK_BYTES,
     maxChunk: MAX_CHUNK_BYTES,
     maxSize: MAX_SLIDE_BYTES,
@@ -184,22 +193,31 @@ slideRoutes.patch(
     const id = String(req.params.id);
     const offset = Number(req.get('Upload-Offset'));
     const checksum = req.get('Upload-Checksum') || undefined;
+    const uploadId = req.get('Upload-Id') || '';
     const chunk = req.body as Buffer;
 
     if (!Number.isInteger(offset) || offset < 0) {
       return res.status(400).json({ error: 'Upload-Offset header is missing or not a whole number.' });
+    }
+    if (!uploadId) {
+      return res.status(400).json({ error: 'Upload-Id header is missing.' });
     }
     if (!Buffer.isBuffer(chunk) || chunk.length === 0) {
       return res.status(400).json({ error: 'Chunk body was empty.' });
     }
 
     try {
-      res.json({ bytes: await appendChunk(id, offset, chunk, checksum) });
+      res.json({ bytes: await appendChunk(id, uploadId, offset, chunk, checksum) });
     } catch (e) {
       // 409 carries the server's real byte count, so the client re-synchronises
       // from the error itself rather than having to ask again. This is the path
       // taken whenever a response was lost in flight and the client resent a
       // chunk that had in fact already landed.
+      // Another file's partial was sitting here. It has been discarded, and the
+      // same 409 shape tells the client to begin again from zero.
+      if (e instanceof UploadReplaced) {
+        return res.status(409).json({ error: e.message, bytes: 0 });
+      }
       if (e instanceof OffsetMismatch) {
         return res.status(409).json({ error: e.message, bytes: e.bytes });
       }
@@ -216,12 +234,13 @@ slideRoutes.patch(
 // the case appear as having a slide.
 slideRoutes.post('/cases/:id/slide/upload/complete', authRequired, uploadLimiter, uploaderOnly, async (req, res) => {
   const id = String(req.params.id);
-  const { size, name } = req.body as { size?: number; name?: string };
+  const { size, name, uploadId } = req.body as { size?: number; name?: string; uploadId?: string };
 
   if (!Number.isInteger(size) || (size as number) <= 0) {
     return res.status(400).json({ error: 'A whole-number byte size is required to finish an upload.' });
   }
   if (!name) return res.status(400).json({ error: 'The original filename is required to finish an upload.' });
+  if (!uploadId) return res.status(400).json({ error: 'uploadId is required to finish an upload.' });
 
   let finalPath: string;
   try {
@@ -229,12 +248,13 @@ slideRoutes.post('/cases/:id/slide/upload/complete', authRequired, uploadLimiter
     // cannot catch a truncated upload that stopped cleanly on a boundary —
     // every piece was intact, there were simply fewer of them — so this is the
     // check that catches it.
-    ({ path: finalPath } = await finalizePart(id, name, size as number));
+    ({ path: finalPath } = await finalizePart(id, uploadId, name, size as number));
   } catch (e) {
     // Anything wrong here means the bytes on disk are not a slide we can trust,
     // so they go rather than linger as a confusing half-case.
     await discardUpload(id).catch(() => {});
     await db.clearSlide(id).catch(() => {});
+    if (e instanceof UploadReplaced)    return res.status(409).json({ error: e.message, bytes: 0 });
     if (e instanceof SizeMismatch)      return res.status(400).json({ error: e.message, bytes: e.actual });
     if (e instanceof UnsupportedFormat) return res.status(400).json({ error: e.message });
     console.error(`[slide] finalize failed for case ${id}: ${(e as Error).message}`);
@@ -250,9 +270,17 @@ slideRoutes.post('/cases/:id/slide/upload/complete', authRequired, uploadLimiter
   // to be unreadable.
   try {
     const probe = await fetch(`${TILE_BASE}/slides/${id}/slide.dzi`);
-    if (!probe.ok) throw new Error('The uploaded file could not be read as a slide image.');
+    // Deliberately specific about the two likely causes. The old wording ("could
+    // not be read as a slide image") sent us looking for a corrupt upload when
+    // the file was simply the wrong kind of TIFF, and vice versa.
+    if (!probe.ok) {
+      throw new Error(
+        'The file uploaded completely, but OpenSlide could not open it. It is either '
+        + 'an ordinary image rather than a tiled whole-slide scan, or the original file is damaged.',
+      );
+    }
   } catch (e) {
-    const message = (e as Error).message.includes('could not be read')
+    const message = (e as Error).message.includes('OpenSlide could not open it')
       ? (e as Error).message
       : 'Slide tile service is unavailable.';
     await db.setSlideFailed(id, message);
