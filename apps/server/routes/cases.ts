@@ -14,6 +14,7 @@ import * as db from '../db.ts';
 import { NOTE_WRITERS, type Role } from '../types.ts';
 import { authRequired } from '../auth.ts';
 import { audit } from '../lib/audit.ts';
+import { caseDiskUsage, discardUpload } from '../lib/chunked-upload.ts';
 
 export const caseRoutes = Router();
 
@@ -148,6 +149,52 @@ caseRoutes.post('/cases/:id/sign', authRequired, async (req, res) => {
 
   audit(req, 'report.sign', id);
   res.json(await db.signCaseReport(id, req.user!.id));
+});
+
+/**
+ * Permanently delete a case — the database row, its notes and annotations, and
+ * the slide files on disk.
+ *
+ * Distinct from archiving, which only hides a case from the worklist. This one
+ * cannot be undone, so it is fenced in three ways:
+ *
+ *   - a SIGNED case is refused. Once a physician has put their name to a
+ *     report it is a completed clinical record, not something to tidy away;
+ *     archiving remains available for those
+ *   - physicians cannot delete. They are the ones who sign reports, and the
+ *     account that completes a record should not also be able to erase it
+ *   - the deletion itself is audited, with what it cost in notes, annotations
+ *     and disk, so the act leaves a trace even though the case does not
+ *
+ * Disk is cleared BEFORE the row. Should the database call then fail, the case
+ * survives with a missing slide — visible, and fixable by deleting again. The
+ * other order would leave gigabytes on disk with no record pointing at them.
+ */
+caseRoutes.delete('/cases/:id', authRequired, async (req, res) => {
+  const id = String(req.params.id);
+  const existing = await db.getCaseMeta(id);
+  if (!existing) return res.status(404).json({ error: 'Case not found.' });
+
+  if (req.user!.role === 'physician') {
+    return res.status(403).json({ error: 'A physician account cannot delete patient records.' });
+  }
+  if (existing.reportedAt) {
+    return res.status(409).json({
+      error: 'This case has been signed off and cannot be deleted. Archive it instead to take it off the worklist.',
+    });
+  }
+
+  const freed = await caseDiskUsage(id);
+  await discardUpload(id);
+  const removed = await db.deleteCase(id);
+  if (!removed) return res.status(404).json({ error: 'Case not found.' });
+
+  const detail = `${removed.notes} note(s), ${removed.annotations} annotation(s), `
+    + `${(freed / 1e6).toFixed(1)} MB of slide data`;
+  audit(req, 'case.delete', id, detail);
+  console.log(`[case] ${id} permanently deleted — ${detail}`);
+
+  res.json({ ok: true, deleted: id, freedBytes: freed, ...removed });
 });
 
 caseRoutes.patch('/cases/:id/archived', authRequired, async (req, res) => {

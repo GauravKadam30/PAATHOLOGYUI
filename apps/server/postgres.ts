@@ -380,6 +380,35 @@ export async function setSlideFailed(id: number | string, message: string): Prom
 }
 
 /**
+ * Permanently remove a case and everything hanging off it.
+ *
+ * The notes and annotations go with it through ON DELETE CASCADE, so this is a
+ * single statement rather than a hand-rolled sequence that could half-finish.
+ * They are counted first, because once the cascade has run there is nothing
+ * left to count and the numbers are what the audit entry records.
+ *
+ * THE AUDIT TRAIL IS DELIBERATELY NOT TOUCHED. A log that can be erased by the
+ * very action it exists to record is not an audit trail. Those rows hold a case
+ * id and an action, never a patient name, so keeping them does not undo the
+ * erasure — it only preserves the fact that a case once existed and who removed
+ * it.
+ *
+ * Returns null when there was no such case, so the caller can answer 404 rather
+ * than report a successful deletion of nothing.
+ */
+export async function deleteCase(id: number | string): Promise<{ notes: number; annotations: number } | null> {
+  const caseId = Number(id);
+  const [existing] = await db.select({ id: cases.id }).from(cases).where(eq(cases.id, caseId)).limit(1);
+  if (!existing) return null;
+
+  const notes = await db.select({ kind: caseNotes.kind }).from(caseNotes).where(eq(caseNotes.caseId, caseId));
+  const anns = await db.select({ caseId: caseAnnotations.caseId }).from(caseAnnotations).where(eq(caseAnnotations.caseId, caseId));
+
+  await db.delete(cases).where(eq(cases.id, caseId));
+  return { notes: notes.length, annotations: anns.length };
+}
+
+/**
  * Forget a case's slide entirely, putting the fields back to how they were
  * before anything was uploaded.
  *

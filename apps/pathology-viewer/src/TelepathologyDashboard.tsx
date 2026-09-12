@@ -57,7 +57,7 @@ import { resolveImageUrl, renderAnnotatedImage, hasAnnotations } from './annotat
 // for why reads are bulk but writes are per-case.
 import {
   useCases, useNotes, useAnnotations, useLegacyAnnotatedImages,
-  useSaveNote, useSaveAnnotations, useArchiveCase, useSignReport,
+  useSaveNote, useSaveAnnotations, useArchiveCase, useDeleteCase, useSignReport,
 } from './queries';
 import { CAN_EDIT } from './types';
 import type { User, Case, CaseStatus, Modal, NoteKind, AnnotationData } from './types';
@@ -310,6 +310,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   const saveNoteMutation = useSaveNote();
   const saveAnnotationsMutation = useSaveAnnotations();
   const archiveMutation = useArchiveCase();
+  const deleteMutation = useDeleteCase();
   const signMutation = useSignReport();
 
   // What this account may edit. The server enforces the same rules — this only
@@ -335,7 +336,12 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   // The case awaiting delete confirmation, or null. Removing a patient is
   // destructive enough to always ask first.
   const [confirmDelete, setConfirmDelete] = useState<Case | null>(null);
-  const deleting = archiveMutation.isPending;
+  // Permanent deletion is a second, separate step inside the same dialog. It
+  // cannot be reached by the click that opened it, so the destructive action is
+  // never where the reversible one was a moment ago.
+  const [purgeStep, setPurgeStep] = useState(false);
+  const deleting = archiveMutation.isPending || deleteMutation.isPending;
+  const closeConfirm = () => { setConfirmDelete(null); setPurgeStep(false); };
 
   // Notes arrive from the server as { caseId: { clinical, pathologist,
   // medicine } }. The three text areas each want a { caseId: body } map, so
@@ -383,6 +389,25 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   // Remove a patient from the worklist. This ARCHIVES rather than destroys:
   // the record and its slide stay on disk and can be restored, which is the
   // right default for clinical data — a mis-click shouldn't be unrecoverable.
+  /**
+   * Erase a patient outright — the record, its notes and annotations, and the
+   * slide file on disk.
+   *
+   * Unlike archiving there is nothing to restore afterwards, which is why it
+   * sits behind its own confirmation. The server refuses it for a case that has
+   * been signed off, and that refusal is shown as-is rather than reworded: the
+   * reason matters more than the failure.
+   */
+  const purgePatient = async (c: Case) => {
+    try {
+      await deleteMutation.mutateAsync({ caseId: c.id });
+      if (caseId === c.id) navigate('/queue');
+      closeConfirm();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Could not delete this patient.');
+    }
+  };
+
   const deletePatient = async (c: Case) => {
     try {
       // The mutation drops it from the cached list itself, so the row
@@ -393,7 +418,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
       // the pathologist back to the worklist rather than leaving them on a
       // case that no longer exists.
       if (caseId === c.id) navigate('/queue');
-      setConfirmDelete(null);
+      closeConfirm();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Could not remove this patient. Is the backend running?');
     }
@@ -845,7 +870,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
               hesitating over a mis-typed entry they're right to clear out. */}
           {confirmDelete && (
             <div
-              onClick={() => !deleting && setConfirmDelete(null)}
+              onClick={() => !deleting && closeConfirm()}
               className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4"
             >
               <div
@@ -855,35 +880,84 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
                 <div className="mx-auto w-12 h-12 rounded-full bg-red-50 ring-8 ring-red-50/50 flex items-center justify-center mb-4">
                   <Trash2 className="w-5 h-5 text-red-600" />
                 </div>
-                <h3 className="text-lg font-bold text-slate-900 tracking-tight">
-                  Remove {confirmDelete.patient}?
-                </h3>
-                <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-                  This takes the case off the worklist. The patient record,
-                  slide and any notes are kept and can be restored — nothing is
-                  permanently erased.
-                </p>
-                {confirmDelete.chcId && (
-                  <p className="mono text-[11px] text-slate-400 mt-3">CHC ID: {confirmDelete.chcId}</p>
+
+                {/* Two steps, deliberately. Archiving is the default because it
+                    is the reversible one; erasing has to be chosen, and then
+                    confirmed on a screen that says exactly what it destroys. */}
+                {!purgeStep ? (
+                  <>
+                    <h3 className="text-lg font-bold text-slate-900 tracking-tight">
+                      Remove {confirmDelete.patient}?
+                    </h3>
+                    <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                      This takes the case off the worklist. The patient record,
+                      slide and any notes are kept and can be restored — nothing is
+                      permanently erased.
+                    </p>
+                    {confirmDelete.chcId && (
+                      <p className="mono text-[11px] text-slate-400 mt-3">CHC ID: {confirmDelete.chcId}</p>
+                    )}
+                    <div className="flex gap-3 mt-6">
+                      <button
+                        onClick={closeConfirm}
+                        disabled={deleting}
+                        className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-slate-600 bg-gray-100 border border-gray-200 hover:bg-gray-200 transition-all disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => deletePatient(confirmDelete)}
+                        disabled={deleting}
+                        className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold text-sm text-white bg-red-600 hover:bg-red-700 shadow-md shadow-red-600/25 transition-all disabled:opacity-60"
+                      >
+                        {deleting
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Removing…</>
+                          : <><Trash2 className="w-4 h-4" /> Remove</>}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => setPurgeStep(true)}
+                      disabled={deleting}
+                      className="mt-4 text-xs font-semibold text-slate-400 hover:text-red-600 underline underline-offset-4 transition-colors disabled:opacity-60"
+                    >
+                      Delete permanently instead
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <h3 className="text-lg font-bold text-slate-900 tracking-tight">
+                      Permanently delete {confirmDelete.patient}?
+                    </h3>
+                    <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                      This erases the patient record, the slide file, and every
+                      note and annotation. The disk space is freed on the server.
+                      <span className="block mt-2 font-semibold text-red-600">
+                        There is no restore. This cannot be undone.
+                      </span>
+                    </p>
+                    {confirmDelete.chcId && (
+                      <p className="mono text-[11px] text-slate-400 mt-3">CHC ID: {confirmDelete.chcId}</p>
+                    )}
+                    <div className="flex gap-3 mt-6">
+                      <button
+                        onClick={() => setPurgeStep(false)}
+                        disabled={deleting}
+                        className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-slate-600 bg-gray-100 border border-gray-200 hover:bg-gray-200 transition-all disabled:opacity-60"
+                      >
+                        Back
+                      </button>
+                      <button
+                        onClick={() => purgePatient(confirmDelete)}
+                        disabled={deleting}
+                        className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold text-sm text-white bg-red-700 hover:bg-red-800 shadow-md shadow-red-700/30 transition-all disabled:opacity-60"
+                      >
+                        {deleting
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Deleting…</>
+                          : <><Trash2 className="w-4 h-4" /> Delete permanently</>}
+                      </button>
+                    </div>
+                  </>
                 )}
-                <div className="flex gap-3 mt-6">
-                  <button
-                    onClick={() => setConfirmDelete(null)}
-                    disabled={deleting}
-                    className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-slate-600 bg-gray-100 border border-gray-200 hover:bg-gray-200 transition-all disabled:opacity-60"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => deletePatient(confirmDelete)}
-                    disabled={deleting}
-                    className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold text-sm text-white bg-red-600 hover:bg-red-700 shadow-md shadow-red-600/25 transition-all disabled:opacity-60"
-                  >
-                    {deleting
-                      ? <><Loader2 className="w-4 h-4 animate-spin" /> Removing…</>
-                      : <><Trash2 className="w-4 h-4" /> Remove</>}
-                  </button>
-                </div>
               </div>
             </div>
           )}

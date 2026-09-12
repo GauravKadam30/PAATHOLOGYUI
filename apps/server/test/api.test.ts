@@ -685,6 +685,77 @@ test('an unsupported format is refused before any bytes are sent', async () => {
   assert.match(res.body.error, /Unsupported slide format/);
 });
 
+/* ===========================================================================
+ * Permanent deletion
+ * ---------------------------------------------------------------------------
+ * Irreversible and it frees disk, so the tests check both what goes and what
+ * deliberately stays.
+ */
+
+test('deleting a patient erases the record, its notes and its slide from disk', async () => {
+  const { token, id } = await caseForUpload();
+  const pathToken = await makePathologist();
+
+  // Give the case something to lose.
+  await api(`/api/cases/${id}/notes/pathologist`, { method: 'PUT', token: pathToken, body: { body: 'findings' } });
+  const bytes = bytesOf(4096, 0x41);
+  await startUpload(id, token, { size: 4096 });
+  await putChunk(id, 0, bytes, token, sha256(bytes));
+
+  const dir = path.join(tmpDir, 'uploads', String(id));
+  assert.ok(fs.existsSync(dir), 'the slide directory should exist before deleting');
+
+  const gone = await api(`/api/cases/${id}`, { method: 'DELETE', token });
+  assert.equal(gone.status, 200);
+  assert.equal(gone.body.notes, 1, 'the note count is reported back');
+
+  assert.equal((await api(`/api/cases/${id}`, { token })).status, 404, 'the case is gone');
+  assert.equal(fs.existsSync(dir), false, 'the disk space is reclaimed');
+
+  const list = await api('/api/cases', { token });
+  assert.equal(list.body.some((c: any) => c.id === id), false, 'and it is out of the worklist');
+});
+
+test('the audit trail survives a deletion — that is the point of it', async () => {
+  const { token, id } = await caseForUpload();
+  const pathToken = await makePathologist();
+  await api(`/api/cases/${id}`, { token: pathToken });          // generates case.view
+
+  await api(`/api/cases/${id}`, { method: 'DELETE', token });
+
+  const trail = await api(`/api/cases/${id}/audit`, { token: pathToken });
+  const actions = (trail.body ?? []).map((r: any) => r.action);
+  assert.ok(actions.includes('case.delete'), 'the deletion itself is recorded');
+  assert.ok(actions.includes('case.view'), 'and the history leading up to it is kept');
+});
+
+test('a signed-off case cannot be deleted', async () => {
+  const { token, id } = await caseForUpload();
+  const physToken = await makePhysician();
+
+  assert.equal((await api(`/api/cases/${id}/sign`, { method: 'POST', token: physToken })).status, 200);
+
+  const refused = await api(`/api/cases/${id}`, { method: 'DELETE', token });
+  assert.equal(refused.status, 409, 'a completed clinical record is not something to tidy away');
+  assert.match(refused.body.error, /signed off/i);
+
+  assert.equal((await api(`/api/cases/${id}`, { token })).status, 200, 'and it is still there');
+});
+
+test('a physician cannot delete a patient record', async () => {
+  const { token, id } = await caseForUpload();
+  const physToken = await makePhysician();
+
+  const refused = await api(`/api/cases/${id}`, { method: 'DELETE', token: physToken });
+  assert.equal(refused.status, 403, 'the account that signs reports must not also erase them');
+  assert.equal((await api(`/api/cases/${id}`, { token })).status, 200);
+});
+
+test('deleting a case that does not exist is refused', async () => {
+  const token = await makeAttendant();
+  assert.equal((await api('/api/cases/999999', { method: 'DELETE', token })).status, 404);
+});
+
 test('a partial upload of a DIFFERENT file is discarded, never spliced onto', async () => {
   const { token, id } = await caseForUpload();
 

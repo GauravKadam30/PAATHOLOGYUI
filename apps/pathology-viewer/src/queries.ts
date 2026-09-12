@@ -27,7 +27,7 @@ import {
 } from '@tanstack/react-query';
 import {
   getCases, getAllNotes, getAllAnnotations, apiGet,
-  saveNote, saveAnnotations, setCaseArchived, getCaseImage, signCaseReport,
+  saveNote, saveAnnotations, setCaseArchived, deleteCase, getCaseImage, signCaseReport,
 } from './api';
 import type {
   Case, NotesByCase, AnnotationsByCase, AnnotationData, NoteKind,
@@ -230,6 +230,23 @@ export function useSignReport() {
  * Removes it from the cached list straight away so the row disappears the
  * moment the action is confirmed, rather than on the next poll.
  */
+/**
+ * Permanently delete a case.
+ *
+ * Drops it from the cached worklist exactly as archiving does, so the row
+ * disappears on confirmation rather than on the next poll. Nothing is
+ * invalidated afterwards because there is nothing left to refetch.
+ */
+export function useDeleteCase() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ caseId }: { caseId: number }) => deleteCase(caseId),
+    onSuccess: (_res, { caseId }) => {
+      qc.setQueryData<Case[]>(keys.cases, (prev) => (prev ?? []).filter((c) => c.id !== caseId));
+    },
+  });
+}
+
 export function useArchiveCase() {
   const qc = useQueryClient();
   return useMutation({

@@ -346,6 +346,24 @@ export function finalizePart(
 }
 
 /**
+ * How many bytes this case is occupying on disk, across every file it holds.
+ *
+ * Measured BEFORE a delete so the audit entry can record what was reclaimed —
+ * afterwards there is nothing left to measure.
+ */
+export async function caseDiskUsage(caseId: string | number): Promise<number> {
+  let total = 0;
+  try {
+    for (const name of await fsp.readdir(caseDir(caseId))) {
+      try { total += (await fsp.stat(path.join(caseDir(caseId), name))).size; } catch { /* vanished */ }
+    }
+  } catch {
+    return 0;   // no directory for this case
+  }
+  return total;
+}
+
+/**
  * Throw away everything on disk for a case's slide — the partial upload and
  * any finished file.
  *

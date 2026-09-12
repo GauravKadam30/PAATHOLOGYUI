@@ -134,6 +134,19 @@ export async function setCaseArchived(caseId: number | string, archived = true):
   });
 }
 
+/**
+ * Permanently delete a case: the record, its notes and annotations, and the
+ * slide file on disk.
+ *
+ * Unlike `setCaseArchived` this cannot be undone. The server refuses it for a
+ * case that has been signed off, and for physician accounts.
+ */
+export async function deleteCase(
+  caseId: number | string,
+): Promise<{ ok: true; freedBytes: number; notes: number; annotations: number }> {
+  return authRequest(`/api/cases/${encodeURIComponent(caseId)}`, { method: 'DELETE' });
+}
+
 /** Sign off a report. Physician accounts only — the server enforces it. */
 export async function signCaseReport(caseId: number | string): Promise<Case> {
   return authRequest(`/api/cases/${encodeURIComponent(caseId)}/sign`, { method: 'POST' });
