@@ -424,6 +424,70 @@ test('only a physician can sign a report, and only once', async () => {
     'signing twice must be refused');
 });
 
+test('the physician who signed can withdraw the signature, and sign again', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'Withdrawable' } })).body;
+  const physToken = await makePhysician();
+
+  const signed = await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: physToken });
+  assert.equal(signed.status, 200);
+  assert.ok(signed.body.reportedById, 'the signer is recorded by account, not only by name');
+
+  const withdrawn = await api(`/api/cases/${c.id}/sign`, { method: 'DELETE', token: physToken });
+  assert.equal(withdrawn.status, 200);
+  assert.equal(withdrawn.body.status, 'Pending', 'the case goes back to the pending worklist');
+  assert.equal(withdrawn.body.reportedAt, null);
+  assert.equal(withdrawn.body.reportedBy, null);
+  assert.equal(withdrawn.body.reportedById, null, 'all three signing fields clear together');
+
+  assert.equal((await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: physToken })).status, 200,
+    'a withdrawn report can be signed again');
+});
+
+test('a physician cannot withdraw a signature made by a different physician with the SAME name', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'Not Theirs' } })).body;
+  // makeUser names every physician "phys user", which is exactly the collision
+  // that matching signers by name would get wrong.
+  const signer = await makePhysician();
+  const namesake = await makePhysician();
+
+  await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: signer });
+  const refused = await api(`/api/cases/${c.id}/sign`, { method: 'DELETE', token: namesake });
+  assert.equal(refused.status, 403, 'a shared name must not be enough to undo a sign-off');
+
+  const still = await api(`/api/cases/${c.id}`, { token: signer });
+  assert.ok(still.body.reportedAt, 'and the report is still signed');
+});
+
+test('withdrawing needs a physician, and a report that is actually signed', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'Guarded' } })).body;
+  const physToken = await makePhysician();
+  const pathToken = await makePathologist();
+
+  assert.equal((await api(`/api/cases/${c.id}/sign`, { method: 'DELETE', token: physToken })).status, 409,
+    'there is nothing to withdraw before it is signed');
+
+  await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: physToken });
+  assert.equal((await api(`/api/cases/${c.id}/sign`, { method: 'DELETE', token: pathToken })).status, 403);
+  assert.equal((await api(`/api/cases/${c.id}/sign`, { method: 'DELETE', token: attToken })).status, 403);
+});
+
+test('a withdrawal is audited, and the original signing stays on record', async () => {
+  const attToken = await makeAttendant();
+  const c = (await api('/api/cases', { method: 'POST', token: attToken, body: { patient: 'On Record' } })).body;
+  const physToken = await makePhysician();
+
+  await api(`/api/cases/${c.id}/sign`, { method: 'POST', token: physToken });
+  await api(`/api/cases/${c.id}/sign`, { method: 'DELETE', token: physToken });
+
+  const trail = await api(`/api/cases/${c.id}/audit`, { token: physToken });
+  const actions = (trail.body ?? []).map((r: any) => r.action);
+  assert.ok(actions.includes('report.sign'), 'withdrawing must not erase that the report was signed');
+  assert.ok(actions.includes('report.unsign'), 'and the withdrawal itself is recorded');
+});
+
 // --- Audit trail --------------------------------------------------------------
 
 test('actions are recorded against the case with who did them', async () => {

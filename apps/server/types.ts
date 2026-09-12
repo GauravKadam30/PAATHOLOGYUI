@@ -117,6 +117,9 @@ export interface CaseMeta {
   reportedAt: string | null;
   /** Display name of the physician who signed it. */
   reportedBy: string | null;
+  /** Account id of the signer. Decides who may withdraw; null on signatures
+   *  made before it was recorded. */
+  reportedById: number | null;
 }
 
 /** A case WITH its inline image — fetched only when a slide is opened. */
@@ -227,6 +230,8 @@ export interface DataDriver {
    * out of the pending worklist, so it is the end of the clinical workflow.
    */
   signCaseReport(id: number | string, userId: number): Promise<CaseMeta | null>;
+  /** Clear a signature and return the case to Pending. */
+  withdrawCaseSignature(id: number | string): Promise<CaseMeta | null>;
   touchCase(id: number | string): Promise<void>;
   /**
    * Returns the updated case, because the archive endpoint echoes it straight

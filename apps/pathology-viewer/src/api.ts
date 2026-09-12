@@ -153,6 +153,14 @@ export async function signCaseReport(caseId: number | string): Promise<Case> {
 }
 
 /**
+ * Withdraw a signature, returning the report to Pending. Only the physician
+ * who signed may do it — the server checks the account, not the name.
+ */
+export async function withdrawCaseSignature(caseId: number | string): Promise<Case> {
+  return authRequest(`/api/cases/${encodeURIComponent(caseId)}/sign`, { method: 'DELETE' });
+}
+
+/**
  * Fetch one submitted case's slide image (data-URL), loaded lazily when the
  * patient's slide is opened. Null when the case has no inline image.
  */

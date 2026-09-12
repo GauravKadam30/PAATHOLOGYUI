@@ -152,6 +152,43 @@ caseRoutes.post('/cases/:id/sign', authRequired, async (req, res) => {
 });
 
 /**
+ * Withdraw a signature — for a physician who signed too early, or signed the
+ * wrong patient's report.
+ *
+ * Only the physician who signed may withdraw it. That is checked by ACCOUNT,
+ * not by name: two physicians can share a name, and matching on it would let
+ * one quietly undo the other's sign-off. Signatures made before the account id
+ * was recorded fall back to the name, since that is all there is.
+ *
+ * Both the original signing and this withdrawal stay in the audit trail, so a
+ * report that was signed and then un-signed still shows that it happened. Note
+ * that a withdrawn report is Pending again, which also makes it deletable — the
+ * delete guard only protects reports that are currently signed.
+ */
+caseRoutes.delete('/cases/:id/sign', authRequired, async (req, res) => {
+  if (req.user!.role !== 'physician')
+    return res.status(403).json({ error: 'Only a physician can withdraw a signature.' });
+
+  const id = String(req.params.id);
+  const existing = await db.getCaseMeta(id);
+  if (!existing) return res.status(404).json({ error: 'Case not found.' });
+  if (!existing.reportedAt)
+    return res.status(409).json({ error: 'This report has not been signed.' });
+
+  const isSigner = existing.reportedById != null
+    ? existing.reportedById === req.user!.id
+    : existing.reportedBy === req.user!.full_name;
+  if (!isSigner) {
+    return res.status(403).json({
+      error: `Only ${existing.reportedBy ?? 'the physician who signed it'} can withdraw this signature.`,
+    });
+  }
+
+  audit(req, 'report.unsign', id, `withdrew signature made at ${existing.reportedAt}`);
+  res.json(await db.withdrawCaseSignature(id));
+});
+
+/**
  * Permanently delete a case — the database row, its notes and annotations, and
  * the slide files on disk.
  *

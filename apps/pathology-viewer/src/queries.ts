@@ -27,7 +27,7 @@ import {
 } from '@tanstack/react-query';
 import {
   getCases, getAllNotes, getAllAnnotations, apiGet,
-  saveNote, saveAnnotations, setCaseArchived, deleteCase, getCaseImage, signCaseReport,
+  saveNote, saveAnnotations, setCaseArchived, deleteCase, getCaseImage, signCaseReport, withdrawCaseSignature,
 } from './api';
 import type {
   Case, NotesByCase, AnnotationsByCase, AnnotationData, NoteKind,
@@ -216,6 +216,24 @@ export function useSignReport() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ caseId }: { caseId: number }) => signCaseReport(caseId),
+    onSuccess: (updated) => {
+      qc.setQueryData<Case[]>(keys.cases, (prev) =>
+        (prev ?? []).map((c) => (c.id === updated.id ? { ...c, ...updated } : c)),
+      );
+    },
+  });
+}
+
+/**
+ * Withdraw a signature. Same cache write as signing, for the same reason: the
+ * case should visibly return to Pending the moment it is confirmed. The
+ * server's response carries the cleared fields as nulls, so spreading it over
+ * the cached case removes the "Signed by" state rather than leaving it behind.
+ */
+export function useWithdrawSignature() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ caseId }: { caseId: number }) => withdrawCaseSignature(caseId),
     onSuccess: (updated) => {
       qc.setQueryData<Case[]>(keys.cases, (prev) =>
         (prev ?? []).map((c) => (c.id === updated.id ? { ...c, ...updated } : c)),

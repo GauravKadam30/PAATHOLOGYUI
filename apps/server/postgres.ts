@@ -89,6 +89,9 @@ export async function init(): Promise<void> {
     -- the CREATE above would not have introduced them.
     ALTER TABLE cases ADD COLUMN IF NOT EXISTS reported_at TEXT;
     ALTER TABLE cases ADD COLUMN IF NOT EXISTS reported_by TEXT;
+    -- The signer BY ACCOUNT. reported_by keeps the name for the record; this is
+    -- what decides who may withdraw a signature, because names collide.
+    ALTER TABLE cases ADD COLUMN IF NOT EXISTS reported_by_id INTEGER;
 
     CREATE INDEX IF NOT EXISTS idx_cases_status  ON cases (status);
     CREATE INDEX IF NOT EXISTS idx_cases_updated ON cases (updated_at);
@@ -248,6 +251,7 @@ const toCaseMeta = (r: typeof cases.$inferSelect): CaseMeta => ({
   hasImage: !!(r.image && r.image !== ''),
   reportedAt: r.reportedAt ?? null,
   reportedBy: r.reportedBy ?? null,
+  reportedById: r.reportedById ?? null,
 });
 
 export async function listCases({ since, includeArchived = false }: ListCasesOptions = {}): Promise<CaseMeta[]> {
@@ -341,7 +345,33 @@ export async function signCaseReport(id: number | string, userId: number): Promi
       status: 'Reported',
       reportedAt: now,
       reportedBy: signer?.full_name ?? 'Unknown',
+      reportedById: userId,
       updatedAt: now,
+    })
+    .where(eq(cases.id, Number(id)));
+  return getCaseMeta(id);
+}
+
+/**
+ * Take a physician's signature back off a report, returning it to Pending.
+ *
+ * All three signing fields are cleared together, exactly as they were set
+ * together, so a case can never be half-signed. `updatedAt` is bumped for the
+ * same reason as signing: the worklist should see the case go back to Pending
+ * on its next poll, not after a refresh.
+ *
+ * Nothing here decides WHO may do this — that is the route's job, and it
+ * checks `reportedById` before calling. The signing and the withdrawal both
+ * stay in the audit trail, so un-signing never erases that a signature existed.
+ */
+export async function withdrawCaseSignature(id: number | string): Promise<CaseMeta | null> {
+  await db.update(cases)
+    .set({
+      status: 'Pending',
+      reportedAt: null,
+      reportedBy: null,
+      reportedById: null,
+      updatedAt: new Date().toISOString(),
     })
     .where(eq(cases.id, Number(id)));
   return getCaseMeta(id);

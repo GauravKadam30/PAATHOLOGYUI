@@ -42,7 +42,7 @@ import { useNavigate } from 'react-router-dom';
 // Icons used across the UI (tree-shaken from the lucide icon set).
 import {
   Clock, Pencil, PencilOff, Square, Circle, Eraser, ArrowLeft, FileText, Download,
-  Microscope, ChevronRight, ClipboardList, Stethoscope, Pill, ShieldCheck,
+  Microscope, ChevronRight, ClipboardList, Stethoscope, Pill, ShieldCheck, ShieldOff,
   Save, Eye, FileImage, Check, X, Loader2,
   ListChecks, Images, Search, LogOut, AlertCircle, EyeOff, Trash2,
 } from 'lucide-react';
@@ -57,7 +57,7 @@ import { resolveImageUrl, renderAnnotatedImage, hasAnnotations } from './annotat
 // for why reads are bulk but writes are per-case.
 import {
   useCases, useNotes, useAnnotations, useLegacyAnnotatedImages,
-  useSaveNote, useSaveAnnotations, useArchiveCase, useDeleteCase, useSignReport,
+  useSaveNote, useSaveAnnotations, useArchiveCase, useDeleteCase, useSignReport, useWithdrawSignature,
 } from './queries';
 import { CAN_EDIT } from './types';
 import type { User, Case, CaseStatus, Modal, NoteKind, AnnotationData } from './types';
@@ -127,6 +127,14 @@ const RAIL_NAV = [
 // at the top of the open rail collapses it (`onToggle`); when collapsed, the
 // same logo reappears alone in a slim strip (see RailCollapsed below) and
 // clicking it there reopens the full rail. Only one logo is ever on screen.
+// How each role reads under the signed-in name. The rail used to say
+// "Pathologist" for everyone, so a physician was mislabelled on every screen.
+const ROLE_LABEL: Record<string, string> = {
+  pathologist: 'Pathologist',
+  physician: 'Physician',
+  lab_attendant: 'Lab Attendant',
+};
+
 interface RailProps {
   /** Which nav item to highlight. */
   active: 'queue' | 'slides' | 'reports';
@@ -140,63 +148,105 @@ interface RailProps {
   onLogout?: () => void;
 }
 
-const Rail = ({ active, count, onNav, disabled, onToggle, user, onLogout }: RailProps) => (
-  <div className="w-[210px] shrink-0 rail-dark border-r border-slate-800 flex flex-col gap-6 px-4 py-5">
-    <button onClick={onToggle} title="Hide sidebar" className="flex items-center gap-2.5 px-1.5 self-start hover:opacity-80 transition-opacity">
-      <div className="w-9 h-9 rounded-[10px] bg-indigo-600 flex items-center justify-center shrink-0">
-        <Microscope className="w-[18px] h-[18px] text-white" />
-      </div>
-      <div className="text-left">
-        <div className="text-sm font-bold text-white leading-tight">EPTB Hub</div>
-        <div className="mono text-[10px] text-slate-500">console</div>
-      </div>
-    </button>
-    {/* The three destinations, generated from RAIL_NAV so adding one is a
-        single line there rather than a new block of markup here. `disabled`
-        is true while a drawing session is open: navigating away mid-annotation
-        would abandon unsaved marks, so the save/discard dialog is made the
-        only way out (the title explains why the buttons look inert). */}
-    <nav className="flex flex-col gap-0.5">
-      {RAIL_NAV.map(({ id, icon: Icon, label }) => {
-        const isActive = id === active;
-        return (
-          <button
-            key={id}
-            onClick={() => onNav?.(id)}
-            disabled={disabled}
-            title={disabled ? 'Finish or discard your annotation first' : undefined}
-            className={`flex items-center gap-2.5 px-3 py-2.5 rounded-[9px] text-[13px] transition-colors ${
-              isActive ? 'bg-indigo-950 text-indigo-200 font-semibold' : 'text-slate-400 font-medium hover:bg-slate-800/60'
-            } ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-          >
-            <Icon className="w-4 h-4" />
-            {label}
-            {id === 'queue' && count != null && (
-              <span className="mono ml-auto text-[10px] bg-indigo-600 text-white rounded-[5px] px-1.5 py-px">{count}</span>
-            )}
+const Rail = ({ active, count, onNav, disabled, onToggle, user, onLogout }: RailProps) => {
+  // Logging out asks first. The button sits just under the nav a clinician
+  // clicks all day, and a slip mid-review would end the session and lose any
+  // note that hadn't been saved yet.
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  return (
+    <div className="w-[210px] shrink-0 rail-dark border-r border-slate-800 flex flex-col gap-6 px-4 py-5">
+      <button onClick={onToggle} title="Hide sidebar" className="flex items-center gap-2.5 px-1.5 self-start hover:opacity-80 transition-opacity">
+        <div className="w-9 h-9 rounded-[10px] bg-indigo-600 flex items-center justify-center shrink-0">
+          <Microscope className="w-[18px] h-[18px] text-white" />
+        </div>
+        <div className="text-left">
+          <div className="text-sm font-bold text-white leading-tight">EPTB Hub</div>
+          <div className="mono text-[10px] text-slate-500">console</div>
+        </div>
+      </button>
+      {/* The three destinations, generated from RAIL_NAV so adding one is a
+          single line there rather than a new block of markup here. `disabled`
+          is true while a drawing session is open: navigating away mid-annotation
+          would abandon unsaved marks, so the save/discard dialog is made the
+          only way out (the title explains why the buttons look inert). */}
+      <nav className="flex flex-col gap-0.5">
+        {RAIL_NAV.map(({ id, icon: Icon, label }) => {
+          const isActive = id === active;
+          return (
+            <button
+              key={id}
+              onClick={() => onNav?.(id)}
+              disabled={disabled}
+              title={disabled ? 'Finish or discard your annotation first' : undefined}
+              className={`flex items-center gap-2.5 px-3 py-2.5 rounded-[9px] text-[13px] transition-colors ${
+                isActive ? 'bg-indigo-950 text-indigo-200 font-semibold' : 'text-slate-400 font-medium hover:bg-slate-800/60'
+              } ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              <Icon className="w-4 h-4" />
+              {label}
+              {id === 'queue' && count != null && (
+                <span className="mono ml-auto text-[10px] bg-indigo-600 text-white rounded-[5px] px-1.5 py-px">{count}</span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+      {/* Signed-in clinician + log out, pinned to the bottom of the rail
+          (`mt-auto` on the last child pushes it down) so it's always reachable
+          without competing with the nav items above it for space. */}
+      {user && (
+        <div className="mt-auto pt-4 border-t border-slate-800 flex items-center gap-2.5 px-0.5">
+          <div className="mono w-8 h-8 rounded-lg bg-indigo-950 text-indigo-300 flex items-center justify-center text-[11px] font-bold shrink-0">
+            {initialsOf(user.fullName || 'U')}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold text-slate-200 truncate">{user.fullName}</div>
+            <div className="mono text-[10px] text-slate-500">{ROLE_LABEL[user.role] ?? user.role}</div>
+          </div>
+          <button onClick={() => setConfirmLogout(true)} title="Log out" className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-800/60 transition-colors shrink-0">
+            <LogOut className="w-4 h-4" />
           </button>
-        );
-      })}
-    </nav>
-    {/* Signed-in pathologist + sign out, pinned to the bottom of the rail
-        (`mt-auto` on the last child pushes it down) so it's always reachable
-        without competing with the nav items above it for space. */}
-    {user && (
-      <div className="mt-auto pt-4 border-t border-slate-800 flex items-center gap-2.5 px-0.5">
-        <div className="mono w-8 h-8 rounded-lg bg-indigo-950 text-indigo-300 flex items-center justify-center text-[11px] font-bold shrink-0">
-          {initialsOf(user.fullName || 'U')}
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-semibold text-slate-200 truncate">{user.fullName}</div>
-          <div className="mono text-[10px] text-slate-500">Pathologist</div>
+      )}
+      {/* Log-out confirmation — the same dialog as the CHC intake portal's, so
+          both apps behave alike. `fixed inset-0` lifts it out of the 210px rail
+          to cover the whole window. */}
+      {confirmLogout && (
+        <div
+          onClick={() => setConfirmLogout(false)}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center border border-gray-200"
+          >
+            <div className="mx-auto w-12 h-12 rounded-full bg-red-50 ring-8 ring-red-50/50 flex items-center justify-center mb-4">
+              <LogOut className="w-5 h-5 text-red-600" />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900 tracking-tight">Log out?</h3>
+            <p className="text-sm text-slate-500 mt-2 mb-6 leading-relaxed">
+              Are you sure you want to log out of the pathology console?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmLogout(false)}
+                className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-slate-600 bg-gray-100 border border-gray-200 hover:bg-gray-200 transition-all"
+              >
+                Stay
+              </button>
+              <button
+                onClick={() => { setConfirmLogout(false); onLogout?.(); }}
+                className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-white bg-red-600 hover:bg-red-700 shadow-md shadow-red-600/25 transition-all"
+              >
+                Log out
+              </button>
+            </div>
+          </div>
         </div>
-        <button onClick={onLogout} title="Log out" className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-slate-800/60 transition-colors shrink-0">
-          <LogOut className="w-4 h-4" />
-        </button>
-      </div>
-    )}
-  </div>
-);
+      )}
+    </div>
+  );
+};
 
 // The collapsed state: a slim strip holding just the same brand mark, so
 // there's still exactly one logo on screen (not zero, not two) once the full
@@ -312,6 +362,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   const archiveMutation = useArchiveCase();
   const deleteMutation = useDeleteCase();
   const signMutation = useSignReport();
+  const withdrawMutation = useWithdrawSignature();
 
   // What this account may edit. The server enforces the same rules — this only
   // decides what the screen offers, so nobody types a paragraph into a box
@@ -342,6 +393,10 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   const [purgeStep, setPurgeStep] = useState(false);
   const deleting = archiveMutation.isPending || deleteMutation.isPending;
   const closeConfirm = () => { setConfirmDelete(null); setPurgeStep(false); };
+  // Which report action is waiting on an "are you sure", if either. Signing and
+  // withdrawing share one dialog because they are the two halves of one act.
+  const [signDialog, setSignDialog] = useState<'sign' | 'withdraw' | null>(null);
+  const signBusy = signMutation.isPending || withdrawMutation.isPending;
 
   // Notes arrive from the server as { caseId: { clinical, pathologist,
   // medicine } }. The three text areas each want a { caseId: body } map, so
@@ -541,20 +596,45 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   const saveMedicine = () =>
     saveNoteOfKind('medicine', medicineDraft[String(id)] ?? '', setMedicineDraft);
 
-  /** Sign the report. Asks first — it records a name against a diagnosis. */
+  /**
+   * Sign the report. Only ever reached from the confirmation dialog, since it
+   * records a name against a diagnosis. That dialog replaces the browser's own
+   * `window.confirm`, which looked nothing like the rest of the app and could
+   * be silenced for the whole site with one "don't ask again" tick.
+   */
   const handleSignReport = async () => {
     if (!currentCase) return;
-    const ok = window.confirm(
-      `Sign and submit the report for ${currentCase.patient}?`
-      + ' This records your name against the diagnosis and marks the case as reported.',
-    );
-    if (!ok) return;
     try {
       await signMutation.mutateAsync({ caseId: id });
+      setSignDialog(null);
     } catch (e) {
+      setSignDialog(null);
       setModal({ type: 'message', title: 'Could not sign the report', text: (e as Error).message });
     }
   };
+
+  /** Take the signature back. The server refuses anyone but the signer. */
+  const handleWithdrawSignature = async () => {
+    if (!currentCase) return;
+    try {
+      await withdrawMutation.mutateAsync({ caseId: id });
+      setSignDialog(null);
+    } catch (e) {
+      setSignDialog(null);
+      setModal({ type: 'message', title: 'Could not withdraw the signature', text: (e as Error).message });
+    }
+  };
+
+  /**
+   * Is this report signed by the physician looking at it?
+   *
+   * Decides only whether "Withdraw" is OFFERED — the server makes the real
+   * decision. Compared by account id; signatures older than that field fall
+   * back to the name, which is all they recorded.
+   */
+  const isOwnSignature = (c: Case) => can.sign && !!c.reportedAt && (
+    c.reportedById != null ? c.reportedById === user.id : c.reportedBy === user.fullName
+  );
 
   // Modal openers
   // The annotated picture is BUILT HERE, on demand, from the saved vector
@@ -1185,13 +1265,29 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
                 </button>
               </div>
               {currentCase.reportedAt ? (
-                <div className="w-full mt-5 py-3 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl font-bold text-sm tracking-wide inline-flex items-center justify-center gap-2">
-                  <ShieldCheck className="w-4 h-4" /> Signed by {currentCase.reportedBy ?? 'physician'}
+                /* Withdraw sits INSIDE the signed bar rather than below it, so
+                   the signed and unsigned states are exactly the same height —
+                   this card is at its 20rem floor on a laptop and has no room
+                   to grow without spilling. */
+                <div className={`w-full mt-5 py-3 px-4 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-xl text-sm inline-flex items-center gap-3 ${isOwnSignature(currentCase) ? 'justify-between' : 'justify-center'}`}>
+                  <span className="min-w-0 inline-flex items-center gap-2 font-bold tracking-wide">
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span className="truncate">Signed by {currentCase.reportedBy ?? 'physician'}</span>
+                  </span>
+                  {isOwnSignature(currentCase) && (
+                    <button
+                      onClick={() => setSignDialog('withdraw')}
+                      disabled={signBusy}
+                      className="shrink-0 text-xs font-semibold text-emerald-700 hover:text-red-600 underline underline-offset-4 transition-colors disabled:opacity-60"
+                    >
+                      Withdraw
+                    </button>
+                  )}
                 </div>
               ) : (
                 <button
-                  onClick={handleSignReport}
-                  disabled={!can.sign || signMutation.isPending}
+                  onClick={() => setSignDialog('sign')}
+                  disabled={!can.sign || signBusy}
                   title={can.sign ? undefined : 'Only a physician can sign a report'}
                   className="w-full mt-5 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm tracking-wide hover:bg-emerald-700 active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 shadow-md shadow-emerald-600/25 transition-all inline-flex items-center justify-center gap-2"
                 >
@@ -1212,6 +1308,87 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
               </span>
             </div>
           </footer>
+
+          {/* Are-you-sure for signing and for withdrawing. Styled like the delete
+              and log-out dialogs so every irreversible-feeling action in the
+              console asks the same way. The backdrop is inert while a request is
+              in flight, so a stray click cannot dismiss it half-way through. */}
+          {signDialog && currentCase && (
+            <div
+              onClick={() => !signBusy && setSignDialog(null)}
+              className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4"
+            >
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center border border-gray-200"
+              >
+                {signDialog === 'sign' ? (
+                  <>
+                    <div className="mx-auto w-12 h-12 rounded-full bg-emerald-50 ring-8 ring-emerald-50/50 flex items-center justify-center mb-4">
+                      <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900 tracking-tight">Sign and submit this report?</h3>
+                    <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                      Your name will be recorded against the diagnosis for{' '}
+                      <span className="font-semibold text-slate-700">{currentCase.patient}</span>, and the
+                      case will be marked as reported.
+                    </p>
+                    <div className="flex gap-3 mt-6">
+                      <button
+                        onClick={() => setSignDialog(null)}
+                        disabled={signBusy}
+                        className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-slate-600 bg-gray-100 border border-gray-200 hover:bg-gray-200 transition-all disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSignReport}
+                        disabled={signBusy}
+                        className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold text-sm text-white bg-emerald-600 hover:bg-emerald-700 shadow-md shadow-emerald-600/25 transition-all disabled:opacity-60"
+                      >
+                        {signMutation.isPending
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Signing…</>
+                          : <><ShieldCheck className="w-4 h-4" /> Sign &amp; Submit</>}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="mx-auto w-12 h-12 rounded-full bg-red-50 ring-8 ring-red-50/50 flex items-center justify-center mb-4">
+                      <ShieldOff className="w-5 h-5 text-red-600" />
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-900 tracking-tight">Withdraw your signature?</h3>
+                    <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+                      The report for{' '}
+                      <span className="font-semibold text-slate-700">{currentCase.patient}</span> goes back
+                      to Pending and your name is removed from it. You can sign it again afterwards.
+                      <span className="block mt-2 text-slate-400">
+                        The original signing stays in the audit trail.
+                      </span>
+                    </p>
+                    <div className="flex gap-3 mt-6">
+                      <button
+                        onClick={() => setSignDialog(null)}
+                        disabled={signBusy}
+                        className="flex-1 py-2.5 rounded-xl font-semibold text-sm text-slate-600 bg-gray-100 border border-gray-200 hover:bg-gray-200 transition-all disabled:opacity-60"
+                      >
+                        Keep signature
+                      </button>
+                      <button
+                        onClick={handleWithdrawSignature}
+                        disabled={signBusy}
+                        className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl font-semibold text-sm text-white bg-red-600 hover:bg-red-700 shadow-md shadow-red-600/25 transition-all disabled:opacity-60"
+                      >
+                        {withdrawMutation.isPending
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Withdrawing…</>
+                          : <><ShieldOff className="w-4 h-4" /> Withdraw</>}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Shared viewer modal — annotated image, saved notes, or a message */}
           {modal && (

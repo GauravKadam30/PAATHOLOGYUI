@@ -87,6 +87,8 @@ export interface Case {
   reportedAt?: string | null;
   /** Name of the physician who signed it. */
   reportedBy?: string | null;
+  /** Account id of the signer — used to offer "withdraw" to them alone. */
+  reportedById?: number | null;
 }
 
 /** The three independently-saved note sections on the report page. */

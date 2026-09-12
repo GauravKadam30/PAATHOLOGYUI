@@ -82,6 +82,10 @@ export const cases = pgTable('cases', {
   // case from Pending to Reported in the worklist. Null while pending.
   reportedAt: text('reported_at'),
   reportedBy: text('reported_by'),
+  // The signer's account id. Deliberately no foreign key: a report must keep
+  // its sign-off history even if the account is later removed, and a dangling
+  // id simply means nobody can withdraw it — the safe failure.
+  reportedById: integer('reported_by_id'),
 }, (t) => ({
   statusIdx: index('idx_cases_status').on(t.status),
   updatedIdx: index('idx_cases_updated').on(t.updatedAt),
