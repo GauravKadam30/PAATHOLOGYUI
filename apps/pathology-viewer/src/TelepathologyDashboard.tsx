@@ -1151,9 +1151,9 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
             </section>
 
             <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-[minmax(30rem,1fr)_minmax(20rem,1fr)] lg:auto-rows-[minmax(20rem,1fr)] gap-5">
-            {/* 1. NIKSAY Patient Information — read-only facts, then what the CHC
+            {/* 1. Nikshay Patient Information — read-only facts, then what the CHC
                 wrote about the visit. */}
-            <SectionCard icon={ClipboardList} title="1. NIKSAY Patient Information">
+            <SectionCard icon={ClipboardList} title="1. Nikshay Patient Information">
               {/* `shrink-0`, no longer `flex-1`: the facts keep their natural
                   height and any spare room in the card goes to the CHC notes
                   below, which is the part that actually benefits from it. */}
