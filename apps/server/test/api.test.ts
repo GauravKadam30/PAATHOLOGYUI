@@ -885,3 +885,127 @@ test('uploading to a case that does not exist is refused', async () => {
   assert.equal((await startUpload(999999, token)).status, 404);
   assert.equal((await putChunk(999999, 0, bytesOf(16, 0x41), token)).status, 404);
 });
+
+/* ===========================================================================
+ * Slides the tile service has open
+ * ---------------------------------------------------------------------------
+ * The tile service keeps recently used slides open. Deleting or replacing one
+ * underneath it used to go unnoticed: it kept serving the old file, and on
+ * Linux a deleted file that a process still holds keeps its disk space until
+ * that process closes it — so deleting patients freed nothing.
+ *
+ * These need a slide OpenSlide can really open, and skip on a machine without
+ * Python and OpenSlide rather than fail.
+ */
+
+/**
+ * A real, if tiny, whole-slide image: a tiled, uncompressed RGB TIFF, which
+ * OpenSlide reads as `generic-tiff`. Built byte by byte because a scanner file
+ * is gigabytes, and nothing about the image matters here except its width —
+ * which is how the tests tell two slides apart.
+ *
+ * Dimensions must exceed the tile size: with a single tile, TIFF stores the
+ * offset inline rather than in the table this writes.
+ */
+function tiledTiff(width: number, height: number, tile = 256): Buffer {
+  const n = Math.ceil(width / tile) * Math.ceil(height / tile);
+  const tileLength = tile * tile * 3;
+  const SHORT = 3, LONG = 4;
+  const entries: Array<[tag: number, type: number, count: number, value: number]> = [];
+  const extraAt = 8 + 2 + 12 * 11 + 4;           // out-of-line values follow the IFD
+  const offsetsAt = extraAt + 6;                 // after BitsPerSample's three SHORTs
+  const countsAt = offsetsAt + 4 * n;
+  const tilesAt = countsAt + 4 * n;
+  entries.push(
+    [256, LONG, 1, width],
+    [257, LONG, 1, height],
+    [258, SHORT, 3, extraAt],                    // BitsPerSample 8,8,8
+    [259, SHORT, 1, 1],                          // uncompressed
+    [262, SHORT, 1, 2],                          // RGB
+    [277, SHORT, 1, 3],                          // samples per pixel
+    [284, SHORT, 1, 1],                          // contiguous
+    [322, LONG, 1, tile],
+    [323, LONG, 1, tile],
+    [324, LONG, n, offsetsAt],
+    [325, LONG, n, countsAt],
+  );
+
+  const buf = Buffer.alloc(tilesAt + n * tileLength);
+  buf.write('II*\0', 0, 'latin1');
+  buf.writeUInt32LE(8, 4);
+  buf.writeUInt16LE(entries.length, 8);
+  entries.forEach(([tag, type, count, value], i) => {
+    const at = 10 + 12 * i;
+    buf.writeUInt16LE(tag, at);
+    buf.writeUInt16LE(type, at + 2);
+    buf.writeUInt32LE(count, at + 4);
+    if (type === SHORT && count === 1) buf.writeUInt16LE(value, at + 8);
+    else buf.writeUInt32LE(value, at + 8);
+  });
+  for (let s = 0; s < 3; s++) buf.writeUInt16LE(8, extraAt + 2 * s);
+  for (let i = 0; i < n; i++) {
+    buf.writeUInt32LE(tilesAt + i * tileLength, offsetsAt + 4 * i);
+    buf.writeUInt32LE(tileLength, countsAt + 4 * i);
+  }
+  buf.fill(0x9c, tilesAt);
+  return buf;
+}
+
+/** Upload a whole slide in one piece and finish it, as the intake app would. */
+async function uploadSlide(id: number, token: string, slide: Buffer, uploadId: string) {
+  await startUpload(id, token, { size: slide.length, uploadId });
+  await putChunk(id, 0, slide, token, sha256(slide), uploadId);
+  return api(`/api/cases/${id}/slide/upload/complete`, {
+    method: 'POST', token, body: { size: slide.length, name: 'slide.tiff', uploadId },
+  });
+}
+
+/**
+ * Whether the tile service is answering. The server starts it alongside
+ * itself, so this waits briefly; a 503 that never clears means there is no
+ * Python or OpenSlide on this machine.
+ */
+async function tileServiceReady(token: string): Promise<boolean> {
+  for (let i = 0; i < 50; i++) {
+    const res = await fetch(`${BASE}/slides/0/info.json`, { headers: { Authorization: `Bearer ${token}` } });
+    await res.arrayBuffer();
+    if (res.status !== 503) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
+test('deleting a patient makes the tile service let go of their slide', async (t) => {
+  const { token, id } = await caseForUpload();
+  if (!await tileServiceReady(token)) return t.skip('the OpenSlide tile service is not available here');
+
+  assert.equal((await uploadSlide(id, token, tiledTiff(1200, 900), 'open-then-delete')).status, 200,
+    'a real slide should pass the OpenSlide check');
+  // Viewing it is what makes the tile service hold the file open.
+  assert.equal((await api(`/slides/${id}/info.json`, { token })).body.width, 1200);
+
+  const gone = await api(`/api/cases/${id}`, { method: 'DELETE', token });
+  assert.equal(gone.status, 200);
+  assert.equal(fs.existsSync(path.join(tmpDir, 'uploads', String(id))), false);
+
+  // This used to answer 200, served out of the deleted file — the handle that
+  // kept the space from ever being freed.
+  assert.equal((await api(`/slides/${id}/info.json`, { token })).status, 404,
+    'a deleted slide must not still be served');
+});
+
+test('a slide replaced on the same case is the one shown, never the cancelled one', async (t) => {
+  const { token, id } = await caseForUpload();
+  if (!await tileServiceReady(token)) return t.skip('the OpenSlide tile service is not available here');
+
+  assert.equal((await uploadSlide(id, token, tiledTiff(1200, 900), 'wrong-file')).status, 200);
+  assert.equal((await api(`/slides/${id}/info.json`, { token })).body.width, 1200);
+
+  // The attendant notices the mistake after it finished, cancels, and sends
+  // the right file to the same patient.
+  assert.equal((await api(`/api/cases/${id}/slide`, { method: 'DELETE', token })).status, 200);
+  assert.equal((await uploadSlide(id, token, tiledTiff(700, 500), 'right-file')).status, 200);
+
+  const info = await api(`/slides/${id}/info.json`, { token });
+  assert.equal(info.body.width, 700, 'the pathologist must see the replacement, not the file that was cancelled');
+});

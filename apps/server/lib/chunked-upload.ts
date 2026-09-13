@@ -27,7 +27,7 @@
 import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
-import { UPLOADS_DIR, isSlideFile } from './tiles.ts';
+import { UPLOADS_DIR, isSlideFile, releaseSlide } from './tiles.ts';
 
 /** Largest single piece the server will accept. The client sends 5 MB; the
  *  headroom lets a future client raise its chunk size without a server change. */
@@ -374,6 +374,9 @@ export async function caseDiskUsage(caseId: string | number): Promise<number> {
 export function discardUpload(caseId: string | number): Promise<void> {
   return withCaseLock(caseId, async () => {
     await fsp.rm(caseDir(caseId), { recursive: true, force: true });
+    // Removing the file is not enough while the tile service still has it
+    // open: the space stays in use, and the old slide stays on screen.
+    await releaseSlide(caseId);
   });
 }
 

@@ -76,6 +76,25 @@ export function startTileServer() {
   });
 }
 startTileServer();
+
+/**
+ * Tell the tile service to close a case's slide, if it has one open.
+ *
+ * Call after removing a case's files. The service keeps recent slides open,
+ * and on Linux a deleted file that a process still holds keeps its disk space
+ * until that process lets go — without this, deleting a patient freed nothing
+ * until a restart. Never throws: a service that is down holds no files, and
+ * one that is slow to answer closes the slide in its own periodic sweep.
+ */
+export async function releaseSlide(caseId: string | number): Promise<void> {
+  try {
+    const res = await fetch(`${TILE_BASE}/slides/${encodeURIComponent(String(caseId))}`, {
+      method: 'DELETE', signal: AbortSignal.timeout(2000),
+    });
+    await res.arrayBuffer();
+  } catch { /* not running, or not answering in time */ }
+}
+
 // Don't leave an orphaned Python process behind when this server stops.
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {

@@ -17,6 +17,8 @@ Routes (caseId is the numeric case id; slides live in <uploads>/<caseId>/):
     GET /slides/<caseId>/slide.dzi                       -> Deep Zoom descriptor XML
     GET /slides/<caseId>/slide_files/<level>/<c>_<r>.jpeg -> one tile
     GET /health                                           -> {"ok": true}
+    DELETE /slides/<caseId>                               -> close that slide (Node calls
+                                                             this after removing its files)
 
 Usage:
     python tile_server.py <uploads-dir> [port]
@@ -27,6 +29,7 @@ import os
 import re
 import sys
 import threading
+import time
 from collections import OrderedDict
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -45,15 +48,63 @@ DZI_RE = re.compile(r"^/slides/(\d+)/slide\.dzi$")
 TILE_RE = re.compile(r"^/slides/(\d+)/slide_files/(\d+)/(\d+)_(\d+)\.jpeg$")
 OVERVIEW_RE = re.compile(r"^/slides/(\d+)/overview\.jpeg")
 INFO_RE = re.compile(r"^/slides/(\d+)/info\.json$")
+RELEASE_RE = re.compile(r"^/slides/(\d+)$")
 MAX_OVERVIEW_DIM = 8192   # ceiling on a requested overview, to bound memory use
+REAP_INTERVAL_S = 60      # how often to close slides whose file has gone
 
 # --- Slide cache -------------------------------------------------------------
 # Opening a slide is comparatively expensive, so keep the most recently used
 # ones open. OpenSlide's handle is NOT safe for concurrent reads, so every
 # entry carries its own lock and readers serialise per slide (different
 # slides still serve in parallel).
-_cache = OrderedDict()          # caseId -> {"slide", "dz", "lock"}
+#
+# An open slide is a held file, and that has two consequences once the file is
+# removed underneath the cache. Linux does not give a deleted file's space back
+# while any process still has it open, so deleting a patient freed nothing
+# until this service restarted. And because entries were keyed by case id
+# alone, a slide REPLACED on the same case went on being served in place of
+# the new one. So the cache now checks, on every hit, that the file is still
+# the one it opened; Node tells it when it removes a case's files (see
+# do_DELETE); and a periodic sweep closes whatever is left.
+_cache = OrderedDict()          # caseId -> {"slide", "dz", "lock", "path", "identity"}
 _cache_lock = threading.Lock()
+
+
+def file_identity(path):
+    """What tells a file apart from its replacement — None once it is gone."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def close_entry(entry):
+    # Under the slide's own lock, so a tile being read from it finishes first.
+    with entry["lock"]:
+        try:
+            entry["slide"].close()
+        except Exception:
+            pass
+
+
+def evict(case_id, only=None):
+    """Close and forget a case's slide. With `only`, just if that is still the
+    cached entry — another thread may already have replaced it."""
+    with _cache_lock:
+        entry = _cache.get(case_id)
+        if entry is None or (only is not None and entry is not only):
+            return
+        del _cache[case_id]
+    close_entry(entry)
+
+
+def reap_stale():
+    """Close every cached slide whose file was deleted or replaced."""
+    with _cache_lock:
+        stale = [(cid, e) for cid, e in _cache.items() if file_identity(e["path"]) != e["identity"]]
+    for cid, entry in stale:
+        evict(cid, only=entry)
 
 
 def find_slide_file(case_id):
@@ -71,29 +122,45 @@ def find_slide_file(case_id):
 def get_entry(case_id):
     """Fetch (or open) the cached OpenSlide + DeepZoomGenerator for a case."""
     with _cache_lock:
-        if case_id in _cache:
+        cached = _cache.get(case_id)
+        if cached is not None:
             _cache.move_to_end(case_id)
-            return _cache[case_id]
+    if cached is not None:
+        if file_identity(cached["path"]) == cached["identity"]:
+            return cached
+        evict(case_id, only=cached)    # deleted or replaced since it was opened
 
     path = find_slide_file(case_id)
     if not path:
         return None
+    identity = file_identity(path)
     slide = openslide.OpenSlide(path)          # raises if unreadable/not a slide
     entry = {
         "slide": slide,
         "dz": DeepZoomGenerator(slide, tile_size=TILE_SIZE, overlap=OVERLAP, limit_bounds=True),
         "lock": threading.Lock(),
+        "path": path,
+        "identity": identity,
     }
 
+    # The viewer asks for many tiles at once, so several threads can miss the
+    # cache for the same slide together. Only one copy may be kept: any other
+    # would never be closed, and would hold the file open for good.
+    to_close = []
     with _cache_lock:
-        _cache[case_id] = entry
+        current = _cache.get(case_id)
+        if current is not None and current["path"] == path and current["identity"] == identity:
+            to_close.append(entry)
+            entry = current
+        else:
+            if current is not None:
+                to_close.append(current)
+            _cache[case_id] = entry
         _cache.move_to_end(case_id)
         while len(_cache) > MAX_OPEN_SLIDES:
-            _, old = _cache.popitem(last=False)
-            try:
-                old["slide"].close()
-            except Exception:
-                pass
+            to_close.append(_cache.popitem(last=False)[1])
+    for old in to_close:
+        close_entry(old)
     return entry
 
 
@@ -202,12 +269,35 @@ class Handler(BaseHTTPRequestHandler):
 
         return self._send(404, b'{"error":"not found"}', "application/json")
 
+    # Node calls this after removing a case's files — a deletion, or a cancelled
+    # or failed upload — so the slide is closed at once rather than whenever the
+    # cache next turns over. Only reachable from this machine: the service
+    # listens on 127.0.0.1, and the public /slides proxy forwards GET alone.
+    def do_DELETE(self):
+        m = RELEASE_RE.match(self.path)
+        if not m:
+            return self._send(404, b'{"error":"not found"}', "application/json")
+        evict(m.group(1))
+        return self._send(204)
+
     def log_message(self, *args):
         pass   # Node owns the console; tile logs would drown everything else
 
 
+def reap_forever():
+    while True:
+        time.sleep(REAP_INTERVAL_S)
+        try:
+            reap_stale()
+        except Exception as e:
+            print(f"[tiles] closing stale slides failed: {e}", flush=True)
+
+
 def main():
     os.makedirs(UPLOADS_DIR, exist_ok=True)
+    # The backstop for files removed without Node's DELETE arriving — a manual
+    # rm, a restored backup, or a release request that timed out.
+    threading.Thread(target=reap_forever, daemon=True).start()
     httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"[tiles] serving slides from {UPLOADS_DIR} on http://127.0.0.1:{PORT}", flush=True)
     httpd.serve_forever()
