@@ -43,9 +43,10 @@ export const users = pgTable('users', {
 /**
  * One patient submission.
  *
- * `id` is a plain integer rather than a serial: ids are assigned by the
- * application starting at 100, so they never collide with the viewer's
- * built-in demo patients (1-3), which exist only in the frontend.
+ * `id` is a plain integer rather than a serial: it is drawn from the
+ * `cases_id_seq` sequence created in postgres.ts init(), which starts at 100 so
+ * ids never collide with the viewer's built-in demo patients (1-3, frontend
+ * only), and never hands out a deleted case's number again.
  */
 export const cases = pgTable('cases', {
   id: integer('id').primaryKey(),

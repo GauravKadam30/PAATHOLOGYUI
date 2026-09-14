@@ -188,9 +188,9 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
   useEffect(() => {
     setSlideInfo(null);
     setScaleState(null);
-    if (!caseData?.dziUrl || !caseData?.id) return;
+    if (!caseData?.dziUrl) return;
     let cancelled = false;
-    fetchSlideInfo(caseData.id).then((info) => {
+    fetchSlideInfo(caseData.dziUrl).then((info) => {
       if (!cancelled && info?.mppX) setSlideInfo(info);
     });
     return () => { cancelled = true; };

@@ -14,7 +14,7 @@ import * as db from '../db.ts';
 import { authRequired } from '../auth.ts';
 import { audit } from '../lib/audit.ts';
 import { uploadLimiter } from '../lib/rate-limit.ts';
-import { TILE_BASE, upload, isSlideFile } from '../lib/tiles.ts';
+import { TILE_BASE, upload, isSlideFile, slideDziPath } from '../lib/tiles.ts';
 import {
   MAX_CHUNK_BYTES, SUGGESTED_CHUNK_BYTES, MAX_SLIDE_BYTES,
   partSize, beginUpload, appendChunk, finalizePart, discardUpload,
@@ -80,7 +80,7 @@ slideRoutes.post('/cases/:id/slide', authRequired, uploadLimiter, async (req, re
   fetch(`${TILE_BASE}/slides/${id}/slide.dzi`)
     .then(async (r) => {
       if (r.ok) {
-        await db.setSlideReady(id, `/slides/${id}/slide.dzi`);
+        await db.setSlideReady(id, slideDziPath(id));
         console.log(`[slide] case ${id} ready (${file.filename}, ${(file.size / 1e9).toFixed(2)} GB)`);
       } else {
         await db.setSlideFailed(id, 'The uploaded file could not be read as a slide image.');
@@ -287,7 +287,7 @@ slideRoutes.post('/cases/:id/slide/upload/complete', authRequired, uploadLimiter
     return res.status(422).json({ error: message });
   }
 
-  await db.setSlideReady(id, `/slides/${id}/slide.dzi`);
+  await db.setSlideReady(id, slideDziPath(id));
   audit(req, 'slide.upload', id, `${name}, ${((size as number) / 1e6).toFixed(0)} MB, resumable`);
   console.log(`[slide] case ${id} ready (${name}, ${((size as number) / 1e9).toFixed(2)} GB, resumable)`);
   res.json(await db.getCaseMeta(id));

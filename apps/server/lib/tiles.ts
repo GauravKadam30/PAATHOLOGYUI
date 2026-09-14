@@ -9,6 +9,7 @@
  * supervision logic in particular is the kind of thing that gets accidentally
  * broken when it sits between unrelated endpoints.
  */
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
@@ -33,6 +34,18 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 // data-URL path (a plain photo of a slide, as before).
 const SLIDE_EXTENSIONS = new Set(['.tiff', '.tif', '.svs', '.ndpi', '.scn', '.mrxs', '.vms', '.vmu', '.bif']);
 export const isSlideFile = (filename: string) => SLIDE_EXTENSIONS.has(path.extname(String(filename)).toLowerCase());
+
+/**
+ * The descriptor address saved for a case once its slide is ready.
+ *
+ * It carries a version that is new for every slide uploaded. Browsers keep
+ * slide images for a day under their address, and without the version that
+ * address is only the case number — so a slide cancelled and replaced on the
+ * same case would be shown from the browser's copy of the old one. The viewer
+ * passes the version on to every tile, info and overview request.
+ */
+export const slideDziPath = (caseId: string | number): string =>
+  `/slides/${caseId}/slide.dzi?v=${crypto.randomBytes(8).toString('hex')}`;
 
 // Start the tile server as a child process and keep it alive for as long as
 // this server runs. It binds to 127.0.0.1 only; browsers reach it through the

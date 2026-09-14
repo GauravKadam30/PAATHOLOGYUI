@@ -146,6 +146,25 @@ export async function init(): Promise<void> {
     -- patient?" and "what did this person do?"
     CREATE INDEX IF NOT EXISTS idx_audit_case ON audit_log (case_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log (user_id, id DESC);
+
+    -- Case numbers. These were once "highest existing id + 1", which handed a
+    -- deleted patient's number straight to the next patient — and browsers
+    -- keep slide images under that number, so the new patient could be shown
+    -- the deleted one's slide. A sequence only ever moves forward, and it also
+    -- stops two simultaneous submissions picking the same number.
+    CREATE SEQUENCE IF NOT EXISTS cases_id_seq START 100;
+  `);
+
+  // Move the counter past every number already given out — including those of
+  // deleted cases, which only the audit trail still remembers — and never
+  // backwards. Runs on every start, so it also catches up a database whose
+  // cases were inserted some other way.
+  await pool.query(`
+    SELECT setval('cases_id_seq', GREATEST(
+      (SELECT COALESCE(MAX(id), 99) FROM cases),
+      (SELECT COALESCE(MAX(case_id), 99) FROM audit_log),
+      (SELECT CASE WHEN is_called THEN last_value ELSE last_value - 1 END FROM cases_id_seq)
+    ))
   `);
 
   // --- Referential integrity --------------------------------------------------
@@ -289,10 +308,12 @@ export async function findCaseByChcId(chcId: string, chcName: string): Promise<C
 }
 
 export async function createCase(data: NewCaseInput, user: UserRow): Promise<number> {
-  // Ids continue from the highest existing one, starting at 100 so they never
-  // clash with the viewer's built-in demo patients (ids 1-3).
-  const rows = await db.select({ max: sql<string>`COALESCE(MAX(${cases.id}), 99)` }).from(cases);
-  const nextId = Number(rows[0]?.max ?? 99) + 1;
+  // Numbers come from cases_id_seq (see init), starting at 100 so they never
+  // clash with the viewer's built-in demo patients (ids 1-3). A deleted
+  // patient's number is never handed out again.
+  const { rows } = await pool.query<{ id: string }>(`SELECT nextval('cases_id_seq') AS id`);
+  const nextId = Number(rows[0]?.id);
+  if (!Number.isInteger(nextId)) throw new Error('Could not allocate a case number.');
   const now = new Date().toISOString();
 
   await db.insert(cases).values({

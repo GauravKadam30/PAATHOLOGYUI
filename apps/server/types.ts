@@ -106,7 +106,8 @@ export interface CaseMeta {
   consultant: string | null;
   notes: string | null;
   chcId: string | null;
-  /** Web path to the Deep Zoom descriptor, e.g. /slides/105/slide.dzi */
+  /** Web path to the Deep Zoom descriptor, e.g. /slides/105/slide.dzi?v=9f2c…
+   *  — the version is new for every uploaded slide (see slideDziPath). */
   dziUrl: string | null;
   slideStatus: SlideStatus;
   slideError: string | null;

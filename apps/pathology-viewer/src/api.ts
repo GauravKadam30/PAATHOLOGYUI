@@ -172,15 +172,33 @@ export async function getCaseImage(id: number | string): Promise<string | null> 
 }
 
 /**
+ * The address of another file belonging to a slide — its info or overview —
+ * worked out from the slide's descriptor address.
+ *
+ * The descriptor address carries a version (`?v=…`) that is new for every
+ * uploaded slide, and it has to travel with these too. Browsers keep them for
+ * a day by address, and without the version that address is only the case
+ * number — so a slide replaced on the same case would be answered from the
+ * browser's copy of the old one.
+ */
+export function slideAssetUrl(dziUrl: string, file: string, params: Record<string, string | number> = {}): string {
+  const absolute = /^https?:/.test(dziUrl) ? dziUrl : `${API_BASE}${dziUrl}`;
+  const url = new URL(absolute, window.location.href);
+  url.pathname = url.pathname.replace(/slide\.dzi$/, file);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+  return url.toString();
+}
+
+/**
  * Slide metadata for a whole-slide case: pixel dimensions plus the scanner's
  * microns-per-pixel calibration. `mppX` is null when the file carries no
  * calibration, in which case the viewer must NOT show a scale bar or a
  * magnification figure — an invented scale on a diagnostic image is worse
  * than no scale at all. Returns null if the slide or service is unavailable.
  */
-export async function fetchSlideInfo(caseId: number | string): Promise<SlideInfo | null> {
+export async function fetchSlideInfo(dziUrl: string): Promise<SlideInfo | null> {
   try {
-    const res = await fetch(`${API_BASE}/slides/${encodeURIComponent(caseId)}/info.json`, { headers: authHeaders() });
+    const res = await fetch(slideAssetUrl(dziUrl, 'info.json'), { headers: authHeaders() });
     if (!res.ok) return null;
     return (await res.json()) as SlideInfo;
   } catch {

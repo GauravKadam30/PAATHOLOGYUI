@@ -24,7 +24,7 @@
  * to the same cell at any zoom or pan — see syncViewport in WsiViewer.
  */
 import * as FabricModule from 'fabric';
-import { API_BASE, authHeaders } from './api';
+import { API_BASE, authHeaders, slideAssetUrl } from './api';
 import type { AnnotationData, Case } from './types';
 
 const fabric = FabricModule;
@@ -155,8 +155,7 @@ export async function renderAnnotatedImage(
     markScale = Math.min(1, MAX_EXPORT_DIM / Math.max(slideWidth, slideHeight));
     W = Math.round(slideWidth * markScale);
     H = Math.round(slideHeight * markScale);
-    const base = resolveDziUrl(caseData.dziUrl).replace(/slide\.dzi$/, '');
-    img = await loadAuthedImage(`${base}overview.jpeg?w=${W}&h=${H}`);
+    img = await loadAuthedImage(slideAssetUrl(caseData.dziUrl, 'overview.jpeg', { w: W, h: H }));
   } else if (caseData.image) {
     // Ordinary photo case: composite at the image's own full resolution.
     img = await loadImage(resolveImageUrl(caseData.image));

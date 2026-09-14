@@ -20,6 +20,9 @@ Routes (caseId is the numeric case id; slides live in <uploads>/<caseId>/):
     DELETE /slides/<caseId>                               -> close that slide (Node calls
                                                              this after removing its files)
 
+GET routes accept ?v=<version>, the slide's upload version. It never changes
+which file is read — only how long the browser may keep the response.
+
 Usage:
     python tile_server.py <uploads-dir> [port]
 """
@@ -31,6 +34,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from urllib.parse import urlparse, parse_qs
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import openslide
@@ -46,7 +50,7 @@ PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 3002
 
 DZI_RE = re.compile(r"^/slides/(\d+)/slide\.dzi$")
 TILE_RE = re.compile(r"^/slides/(\d+)/slide_files/(\d+)/(\d+)_(\d+)\.jpeg$")
-OVERVIEW_RE = re.compile(r"^/slides/(\d+)/overview\.jpeg")
+OVERVIEW_RE = re.compile(r"^/slides/(\d+)/overview\.jpeg$")
 INFO_RE = re.compile(r"^/slides/(\d+)/info\.json$")
 RELEASE_RE = re.compile(r"^/slides/(\d+)$")
 MAX_OVERVIEW_DIM = 8192   # ceiling on a requested overview, to bound memory use
@@ -167,22 +171,33 @@ def get_entry(case_id):
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"   # keep-alive: the viewer requests many tiles
 
+    # Whether the request being answered carried the slide's version (?v=…).
+    versioned = False
+
     def _send(self, code, body=b"", content_type="application/octet-stream", cache=False):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         if cache:
-            # Tiles for a given slide never change, so let the browser keep them.
-            self.send_header("Cache-Control", "public, max-age=86400")
+            # Patient data, so only the viewer's own browser may keep it
+            # ("private"), never a cache shared between users. A versioned
+            # address names one uploaded file, so a day is safe. A bare one is
+            # only a case number, which comes to mean a different slide once
+            # that slide is replaced, so the browser must check back every time.
+            self.send_header("Cache-Control", "private, max-age=86400" if self.versioned else "private, no-cache")
         self.end_headers()
         if body:
             self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/health":
+        url = urlparse(self.path)
+        path, query = url.path, parse_qs(url.query)
+        self.versioned = bool(query.get("v"))
+
+        if path == "/health":
             return self._send(200, b'{"ok":true}', "application/json")
 
-        m = DZI_RE.match(self.path)
+        m = DZI_RE.match(path)
         if m:
             case_id = m.group(1)
             try:
@@ -199,7 +214,7 @@ class Handler(BaseHTTPRequestHandler):
         # scanner records and which is the ONLY honest basis for a scale bar or
         # a magnification readout — without it the viewer shows neither rather
         # than inventing a scale on a diagnostic image.
-        m = INFO_RE.match(self.path)
+        m = INFO_RE.match(path)
         if m:
             case_id = m.group(1)
             try:
@@ -228,14 +243,12 @@ class Handler(BaseHTTPRequestHandler):
         # A single downscaled JPEG of the WHOLE slide. Used when exporting an
         # annotated image: the native size (billions of pixels) is far past
         # what a browser canvas can hold, so the export is built from this.
-        m = OVERVIEW_RE.match(self.path)
+        m = OVERVIEW_RE.match(path)
         if m:
             case_id = m.group(1)
             try:
-                from urllib.parse import urlparse, parse_qs
-                q = parse_qs(urlparse(self.path).query)
-                want_w = min(int(q.get("w", [2048])[0]), MAX_OVERVIEW_DIM)
-                want_h = min(int(q.get("h", [2048])[0]), MAX_OVERVIEW_DIM)
+                want_w = min(int(query.get("w", [2048])[0]), MAX_OVERVIEW_DIM)
+                want_h = min(int(query.get("h", [2048])[0]), MAX_OVERVIEW_DIM)
 
                 entry = get_entry(case_id)
                 if not entry:
@@ -250,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send(500, json.dumps({"error": str(e)}).encode(), "application/json")
 
-        m = TILE_RE.match(self.path)
+        m = TILE_RE.match(path)
         if m:
             case_id, level, col, row = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4))
             try:

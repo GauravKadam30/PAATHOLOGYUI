@@ -1009,3 +1009,44 @@ test('a slide replaced on the same case is the one shown, never the cancelled on
   const info = await api(`/slides/${id}/info.json`, { token });
   assert.equal(info.body.width, 700, 'the pathologist must see the replacement, not the file that was cancelled');
 });
+
+test("a deleted patient's case number is never given to the next patient", async () => {
+  const token = await makeAttendant();
+  const first = await api('/api/cases', { method: 'POST', token, body: { patient: 'Deleted Soon' } });
+  assert.equal((await api(`/api/cases/${first.body.id}`, { method: 'DELETE', token })).status, 200);
+
+  // Browsers keep slide images under the case number, and people write it
+  // down — reusing it would attach the deleted patient to someone else.
+  const next = await api('/api/cases', { method: 'POST', token, body: { patient: 'Next Patient' } });
+  assert.ok(next.body.id > first.body.id,
+    `case ${first.body.id} was deleted, yet the next patient was numbered ${next.body.id}`);
+});
+
+test('every uploaded slide gets its own address, so a browser cannot show an old copy', async (t) => {
+  const { token, id } = await caseForUpload();
+  if (!await tileServiceReady(token)) return t.skip('the OpenSlide tile service is not available here');
+
+  assert.equal((await uploadSlide(id, token, tiledTiff(1200, 900), 'first-file')).status, 200);
+  const first = (await api(`/api/cases/${id}`, { token })).body.dziUrl;
+  assert.match(first, new RegExp(`^/slides/${id}/slide\\.dzi\\?v=[0-9a-f]+$`));
+
+  await api(`/api/cases/${id}/slide`, { method: 'DELETE', token });
+  assert.equal((await uploadSlide(id, token, tiledTiff(700, 500), 'second-file')).status, 200);
+  const second = (await api(`/api/cases/${id}`, { token })).body.dziUrl;
+  assert.notEqual(second, first, 'a replacement slide must not reuse the old address');
+
+  const headers = { Authorization: `Bearer ${token}` };
+  const version = second.slice(second.indexOf('?'));
+  const tile = await fetch(`${BASE}/slides/${id}/slide_files/0/0_0.jpeg${version}`, { headers });
+  await tile.arrayBuffer();
+  assert.equal(tile.status, 200, 'the version must not stop the tile being found');
+  assert.equal(tile.headers.get('cache-control'), 'private, max-age=86400',
+    'a versioned address names one file, so the browser may keep it — but only the browser');
+
+  const bare = await fetch(`${BASE}/slides/${id}/slide_files/0/0_0.jpeg`, { headers });
+  await bare.arrayBuffer();
+  assert.equal(bare.headers.get('cache-control'), 'private, no-cache',
+    'a bare case number can come to mean another slide, so it must be checked every time');
+
+  assert.equal((await api(`/slides/${id}/info.json${version}`, { token })).body.width, 700);
+});

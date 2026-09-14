@@ -74,7 +74,8 @@ export interface Case {
   /** True when a photo exists server-side but hasn't been fetched yet. */
   hasImage?: boolean;
 
-  /** Whole-slide cases: path to the Deep Zoom descriptor, e.g. /slides/105/slide.dzi */
+  /** Whole-slide cases: path to the Deep Zoom descriptor, e.g. /slides/105/slide.dzi?v=9f2c…
+   *  The version is new for every uploaded slide; keep it on derived URLs (slideAssetUrl). */
   dziUrl?: string | null;
   slideStatus?: SlideStatus;
   slideError?: string | null;
