@@ -1,8 +1,36 @@
 import { useState } from 'react';
-import type { FormEvent } from 'react';
-import { Microscope, LogIn, UserPlus, Loader2, AlertCircle, ShieldCheck, KeyRound } from 'lucide-react';
+import type { FormEvent, InputHTMLAttributes } from 'react';
+import { Microscope, LogIn, UserPlus, Loader2, AlertCircle, ShieldCheck, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { login, signup, requestReset, resetPassword, portalRole, type ConsoleRole } from './api';
 import type { User } from './types';
+
+/**
+ * A password box with a show/hide control inside its right edge.
+ *
+ * The icon shows the field's CURRENT state — an open eye while the characters
+ * are visible, a struck-through one while they are hidden — and its label says
+ * what pressing it will do. Pressing it leaves the caret in the field, so
+ * someone checking for a typo can carry straight on typing.
+ */
+function PasswordInput({ className = '', ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, 'type'>) {
+  const [visible, setVisible] = useState(false);
+  const action = visible ? 'Hide password' : 'Show password';
+  return (
+    <div className="relative">
+      <input {...props} type={visible ? 'text' : 'password'} className={`${className} pr-11`} />
+      <button
+        type="button"
+        onClick={() => setVisible((v) => !v)}
+        onMouseDown={(e) => e.preventDefault()}
+        aria-label={action}
+        title={action}
+        className="absolute inset-y-0 right-0 flex items-center px-3 rounded-r-[9px] text-slate-500 hover:text-slate-200 focus-visible:text-indigo-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 transition-colors"
+      >
+        {visible ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+      </button>
+    </div>
+  );
+}
 
 /*
  * Login.tsx — the sign-in / sign-up screen shown before the console loads.
@@ -199,7 +227,8 @@ export default function Login({ onAuth }: LoginProps) {
             {!isReset && (
               <div>
                 <label className={labelCls}>Password</label>
-                <input type="password" className={inputCls} placeholder={isSignup ? 'At least 6 characters' : '••••••••'} required
+                <PasswordInput className={inputCls} placeholder={isSignup ? 'At least 6 characters' : '••••••••'} required
+                  autoComplete={isSignup ? 'new-password' : 'current-password'}
                   value={form.password} onChange={(e) => set('password', e.target.value)} />
               </div>
             )}
@@ -216,7 +245,8 @@ export default function Login({ onAuth }: LoginProps) {
                 </div>
                 <div>
                   <label className={labelCls}>New password</label>
-                  <input type="password" className={inputCls} placeholder="At least 6 characters" required
+                  <PasswordInput className={inputCls} placeholder="At least 6 characters" required
+                    autoComplete="new-password"
                     value={form.newPassword} onChange={(e) => set('newPassword', e.target.value)} />
                 </div>
               </>

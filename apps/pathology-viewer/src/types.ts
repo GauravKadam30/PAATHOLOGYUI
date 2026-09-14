@@ -82,6 +82,9 @@ export interface Case {
 
   /** Archived cases are hidden from the worklist but not deleted. */
   archived?: boolean;
+  /** When the server accepted the submission, ISO 8601 in UTC. Shown in the
+   *  worklist's Received column, converted to the reader's local time. */
+  createdAt?: string | null;
   updatedAt?: string | null;
 
   /** Set when a physician signs the report; null while the case is pending. */

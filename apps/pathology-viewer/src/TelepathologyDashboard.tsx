@@ -106,6 +106,32 @@ const initialsOf = (name: string): string =>
 // Lab Attendant / CHC columns.
 const patientIdLabel = (c: Case): string => (c.chcId ? `CHC ID: ${c.chcId}` : '—');
 
+// When a case reached the console, in the reader's own timezone: "14/09/2026"
+// and "12:35 PM". Built from `createdAt`, the moment the server accepted the
+// submission — stored in UTC, so it reads correctly wherever it is viewed.
+// A case without one falls back to the collection date the CHC recorded.
+const RECEIVED_DATE = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+const RECEIVED_TIME = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+const receivedAt = (c: Case): { date: string; time: string | null } => {
+  const at = c.createdAt ? new Date(c.createdAt) : null;
+  if (at && !Number.isNaN(at.getTime())) {
+    return { date: RECEIVED_DATE.format(at), time: RECEIVED_TIME.format(at) };
+  }
+  const [y, m, d] = (c.date || '').split('-');
+  return { date: y && m && d ? `${d}/${m}/${y}` : (c.date || '—'), time: null };
+};
+
+/** The worklist's Received cell: the date, with the time of day beneath it. */
+const ReceivedCell = ({ c }: { c: Case }) => {
+  const { date, time } = receivedAt(c);
+  return (
+    <div className="hidden sm:block mono tabular-nums leading-tight" title={time ? `Received ${date}, ${time}` : `Received ${date}`}>
+      <div className="text-[12.5px] text-slate-500">{date}</div>
+      {time && <div className="text-[11px] text-slate-400 mt-0.5">{time}</div>}
+    </div>
+  );
+};
+
 // Note: the localStorage helpers that used to live here are gone. TanStack
 // Query now owns caching (see queries.ts), so mirroring server data into
 // localStorage by hand would just be a second, staler copy of the same thing.
@@ -434,9 +460,6 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   // the screens below guard for it instead.
   const currentCase: Case | undefined = cases.find((c) => c.id === caseId) ?? cases[0];
   const id = currentCase?.id ?? 0;      // unused when there is no case to show
-  const defaultClinical = currentCase
-    ? `Palpable nodule identified in the ${String(currentCase.site ?? 'specimen').toLowerCase()}.`
-    : '';
   // Which cases can be archived. Every case now comes from the server, so this
   // is all of them — it stays as a set because the row still asks per case.
   const intakeIds = useMemo(() => new Set(intakeCases.map((c) => c.id)), [intakeCases]);
@@ -590,11 +613,14 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
   };
 
   const saveClinical = () =>
-    saveNoteOfKind('clinical', clinicalDraft[String(id)] ?? defaultClinical, setClinicalDraft);
+    saveNoteOfKind('clinical', clinicalDraft[String(id)] ?? clinicalSaved[String(id)] ?? '', setClinicalDraft);
+  // Each falls back to the SAVED note, which is what the box shows when nothing
+  // has been typed. Falling back to '' instead meant pressing Save on an
+  // untouched box sent an empty note and erased the one on the server.
   const savePathologist = () =>
-    saveNoteOfKind('pathologist', pathologistDraft[String(id)] ?? '', setPathologistDraft);
+    saveNoteOfKind('pathologist', pathologistDraft[String(id)] ?? pathologistSaved[String(id)] ?? '', setPathologistDraft);
   const saveMedicine = () =>
-    saveNoteOfKind('medicine', medicineDraft[String(id)] ?? '', setMedicineDraft);
+    saveNoteOfKind('medicine', medicineDraft[String(id)] ?? medicineSaved[String(id)] ?? '', setMedicineDraft);
 
   /**
    * Sign the report. Only ever reached from the confirmation dialog, since it
@@ -874,7 +900,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
                           have neither, so these show a muted dash. */}
                       <div className="hidden sm:block text-[13px] text-slate-600 truncate">{c.attendant || '—'}</div>
                       <div className="hidden sm:block text-[13px] text-slate-600 truncate">{c.chcName || '—'}</div>
-                      <div className="hidden sm:block mono text-[12.5px] text-slate-500 tabular-nums">{c.date}</div>
+                      <ReceivedCell c={c} />
                       {/* While a scanned slide is still arriving (or if it
                           failed), that matters more than Pending/Reported —
                           it's the reason the row can't be opened yet. */}
@@ -1217,7 +1243,7 @@ const TelepathologyDashboard = ({ user, onLogout, view, caseId }: DashboardProps
               <textarea
                 className={taClass}
                 placeholder="Enter clinical notes…"
-                value={clinicalDraft[String(id)] ?? clinicalSaved[String(id)] ?? defaultClinical}
+                value={clinicalDraft[String(id)] ?? clinicalSaved[String(id)] ?? ''}
                 onChange={(e) => setClinicalDraft(prev => ({ ...prev, [id]: e.target.value }))}
               />
               <div className="flex flex-wrap gap-2 mt-4">

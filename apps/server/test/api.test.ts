@@ -248,6 +248,23 @@ test('a pathologist account cannot submit a case', async () => {
   assert.equal(res.status, 403);
 });
 
+test('a new case records the exact moment it was received, not just the day', async () => {
+  const token = await makeAttendant();
+  const before = Date.now();
+  const created = await api('/api/cases', { method: 'POST', token, body: { patient: 'Timestamp Subject' } });
+  const after = Date.now();
+  assert.equal(created.status, 200);
+
+  // Stamped by the server in UTC, so the console can show it in whatever
+  // timezone it is read in — and no CHC computer's clock is trusted for it.
+  assert.match(created.body.createdAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+  const at = Date.parse(created.body.createdAt);
+  assert.ok(at >= before - 1000 && at <= after + 1000, `stamped ${created.body.createdAt}, outside the request`);
+
+  const listed = (await api('/api/cases', { token })).body.find((c: any) => c.id === created.body.id);
+  assert.equal(listed?.createdAt, created.body.createdAt, 'the worklist carries the same moment');
+});
+
 test('a duplicate CHC Patient ID at the same centre is rejected', async () => {
   const token = await makeAttendant();
   const chcId = `ID-${Date.now()}`;

@@ -266,6 +266,7 @@ const toCaseMeta = (r: typeof cases.$inferSelect): CaseMeta => ({
   consultant: r.consultant, notes: r.notes, chcId: r.chcId,
   dziUrl: r.dziPath ?? null, slideStatus: (r.slideStatus ?? null) as CaseMeta['slideStatus'],
   slideError: r.slideError ?? null, archived: !!r.archived,
+  createdAt: r.createdAt ?? null,
   updatedAt: r.updatedAt ?? null,
   hasImage: !!(r.image && r.image !== ''),
   reportedAt: r.reportedAt ?? null,

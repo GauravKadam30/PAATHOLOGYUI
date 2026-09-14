@@ -112,6 +112,8 @@ export interface CaseMeta {
   slideStatus: SlideStatus;
   slideError: string | null;
   archived: boolean;
+  /** The moment the server accepted the submission, ISO 8601 in UTC. */
+  createdAt: string | null;
   updatedAt: string | null;
   hasImage: boolean;
   /** When a physician signed the report. Null while the case is pending. */

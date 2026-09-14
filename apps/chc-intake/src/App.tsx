@@ -28,6 +28,10 @@ const EMPTY: IntakeForm = { chcId: '', name: '', abha: '', age: '', nikshay: '',
 // and turn it into a piece of text (a "data-URL") that can be stored and sent to
 // the server. Shrinking stops the saved image from being unnecessarily huge.
 //
+// A date as "yyyy-mm-dd" in THIS computer's timezone.
+const localIsoDate = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
 // Only ever called for ORDINARY photos. Scanner slides skip this entirely —
 // browsers can't decode a .tiff in an <img>, and a gigapixel image would blow
 // past the canvas size limit anyway.
@@ -163,7 +167,10 @@ function App() {
         gender: form.gender,
         site: 'Lymph Node',
         status: 'Pending',
-        date: new Date().toISOString().slice(0, 10), // today's date, e.g. "2026-06-21"
+        // Today's LOCAL date, e.g. "2026-06-21". toISOString() gives the UTC
+        // date, which in India is still yesterday until 05:30 in the morning.
+        // The exact time of submission is stamped by the server (createdAt).
+        date: localIsoDate(new Date()),
         chcId: form.chcId.trim(),
         abha: form.abha.trim(),
         nikshay: form.nikshay.trim(),

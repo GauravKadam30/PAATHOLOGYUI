@@ -44,6 +44,7 @@ import { ZoomIn, ZoomOut, Home, Maximize, Minimize, X, Loader2, List, Crosshair,
 import { resolveImageUrl, resolveDziUrl, renderAnnotatedImage, listAnnotations } from './annotations';
 import type { AnnotationSummary } from './annotations';
 import { fetchSlideInfo, authHeaders } from './api';        // scanner calibration + auth for tile requests
+import SlideNavigator from './SlideNavigator';               // the overview minimap in the corner
 import type { Case, AnnotationData, SlideInfo } from './types';
 
 // fabric v7 has no named `fabric` export, so we use the whole module namespace.
@@ -173,6 +174,10 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
   const [slideInfo, setSlideInfo] = useState<SlideInfo | null>(null);
   // Recomputed as the user zooms.
   const [scaleState, setScaleState] = useState<ScaleState | null>(null);
+  // The live OpenSeadragon instance, as STATE as well as a ref: the overview
+  // minimap has to re-subscribe whenever a new viewer is built for a patient,
+  // and a ref changing would not tell it so.
+  const [osdViewer, setOsdViewer] = useState<OpenSeadragon.Viewer | null>(null);
 
   // Drawing is allowed once the user has picked a tool, plus a color for the
   // drawing tools — the eraser doesn't need one.
@@ -386,7 +391,11 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
     viewer.addHandler('update-viewport', syncViewport);
 
     viewerRef.current = viewer;
-    return () => viewer.destroy();   // cleanup when patient changes / unmounts
+    setOsdViewer(viewer);
+    return () => {                   // cleanup when patient changes / unmounts
+      setOsdViewer(null);
+      viewer.destroy();
+    };
   }, [caseData, isReady, syncViewport]);
 
   // --- Build the fabric annotation canvas (its own layer over the viewer) ---
@@ -887,6 +896,18 @@ const WsiViewer = forwardRef<WsiViewerHandle, WsiViewerProps>(({
             <div className="absolute left-0 right-0 bottom-0 h-px bg-slate-200" />
           </div>
         </div>
+      )}
+
+      {/* Slide overview (minimap) — see SlideNavigator.tsx. Bottom-right, lifted
+          clear of the dashboard's floating "Prescription & Info" button, which
+          owns that corner outside full screen. At z-65, like the other controls,
+          so it stays usable above the drawing overlay while annotating. */}
+      {osdViewer && (
+        <SlideNavigator
+          viewer={osdViewer}
+          caseData={caseData}
+          className={`absolute right-5 ${isFullPage ? 'bottom-5' : 'bottom-20'} z-[65]`}
+        />
       )}
 
       {/* --- Annotation list ---------------------------------------------------

@@ -62,6 +62,13 @@ textarea {
   resize: vertical;
 }
 
+/* The sign-in screen draws its own show/hide eye inside password fields.
+   Edge adds a second one of its own; hide it so there is only one. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none;
+}
+
 button {
   -webkit-tap-highlight-color: transparent;
 }
